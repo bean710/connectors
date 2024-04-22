@@ -550,6 +550,7 @@ class ConfluenceDataSource(BaseDataSource):
             attachment_count = 0
             for document in documents:
                 updated_time = document["history"]["lastUpdated"]["when"]
+                created_time = document["history"]["createdDate"]
                 if document.get("children").get("attachment"):
                     attachment_count = document["children"]["attachment"]["size"]
                 document_url = os.path.join(
@@ -559,6 +560,7 @@ class ConfluenceDataSource(BaseDataSource):
                     "_id": document["id"],
                     "type": document["type"],
                     "_timestamp": updated_time,
+                    "created": created_time,
                     "title": document["title"],
                     "space": document["space"]["name"],
                     "body": document["body"]["storage"]["value"],
