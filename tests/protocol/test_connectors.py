@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import ANY, AsyncMock, Mock, patch
 
 import pytest
-from elasticsearch import ConflictError
+from elasticsearch import ApiError, ConflictError
 
 from connectors.config import load_config
 from connectors.filtering.validation import (
@@ -39,6 +39,7 @@ from connectors.protocol import (
     SyncJob,
     SyncJobIndex,
 )
+from connectors.protocol.connectors import ProtocolError
 from connectors.source import BaseDataSource
 from connectors.utils import ACCESS_CONTROL_INDEX_PREFIX, iso_utc
 from tests.commons import AsyncIterator
@@ -792,6 +793,28 @@ async def test_sync_job_claim():
     await sync_job.claim(sync_cursor=SYNC_CURSOR)
 
     index.update.assert_called_with(doc_id=sync_job.id, doc=expected_doc_source_update)
+
+
+@pytest.mark.asyncio
+async def test_sync_job_claim_fails():
+    source = {"_id": "1"}
+    index = Mock()
+    api_meta = Mock()
+    api_meta.status = 413
+    error_body = {"error": {"reason": "mocked test failure"}}
+    index.update = AsyncMock(
+        side_effect=ApiError(
+            message="this is an error message", body=error_body, meta=api_meta
+        )
+    )
+
+    sync_job = SyncJob(elastic_index=index, doc_source=source)
+    with pytest.raises(ProtocolError) as e:
+        await sync_job.claim(sync_cursor=SYNC_CURSOR)
+        assert (
+            "because Elasticsearch responded with status 413. Reason: mocked test failure"
+            in str(e)
+        )
 
 
 @pytest.mark.asyncio
@@ -1736,9 +1759,11 @@ def test_feature_enabled(features_json, feature_enabled):
     features = Features(features_json)
 
     assert all(
-        features.feature_enabled(feature)
-        if enabled
-        else not features.feature_enabled(feature)
+        (
+            features.feature_enabled(feature)
+            if enabled
+            else not features.feature_enabled(feature)
+        )
         for feature, enabled in feature_enabled.items()
     )
 
@@ -2259,3 +2284,35 @@ async def test_get_connector_by_index():
     es_client.client.search.assert_awaited_once()
     assert connector.id == doc["_id"]
     assert connector.index_name == index_name
+
+
+@pytest.mark.parametrize(
+    "indexed_timestamp, expected_datetime",
+    [
+        ("2024-05-28T12:34:56", datetime(2024, 5, 28, 12, 34, 56, tzinfo=timezone.utc)),
+        (
+            "2024-05-28T12:34:56+00:00",
+            datetime(2024, 5, 28, 12, 34, 56, tzinfo=timezone.utc),
+        ),
+        (
+            "2024-05-28T12:34:56+02:00",
+            datetime(2024, 5, 28, 10, 34, 56, tzinfo=timezone.utc),
+        ),
+    ],
+)
+def test_property_as_datetime(indexed_timestamp, expected_datetime):
+    connector = Connector(
+        elastic_index=Mock(),
+        doc_source={
+            "_id": "test-tz-aware-timestamp-migration",
+            "_source": {
+                "last_sync_scheduled_at": indexed_timestamp,
+                "last_incremental_sync_scheduled_at": indexed_timestamp,
+                "last_access_control_sync_scheduled_at": indexed_timestamp,
+            },
+        },
+    )
+
+    assert connector.last_sync_scheduled_at == expected_datetime
+    assert connector.last_incremental_sync_scheduled_at == expected_datetime
+    assert connector.last_access_control_sync_scheduled_at == expected_datetime
