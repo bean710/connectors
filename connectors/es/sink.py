@@ -617,11 +617,17 @@ class Extractor:
                         }
                     )
 
+                # We try raising every loop to not miss a moment when
+                # too many errors happened when downloading
                 lazy_downloads.raise_any_exception()
 
                 await asyncio.sleep(0)
+
+            # Sit and wait until an error happens
+            await lazy_downloads.join(raise_on_error=True)
         finally:
             # wait for all downloads to be finished
+            # even if we errored out
             await lazy_downloads.join()
 
         await self.enqueue_docs_to_delete(existing_ids)
