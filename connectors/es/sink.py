@@ -484,7 +484,7 @@ class Extractor:
         try:
             match job_type:
                 case JobType.FULL:
-                    await self.get_docs(generator)
+                    await self.get_docs(generator, skip_unchanged_documents=True)
                 case JobType.INCREMENTAL:
                     if self.skip_unchanged_documents:
                         await self.get_docs(generator, skip_unchanged_documents=True)
