@@ -790,9 +790,25 @@ async def test_sync_job_claim():
     }
 
     sync_job = SyncJob(elastic_index=index, doc_source=source)
+    sync_job.index.feature_use_connectors_api = False
     await sync_job.claim(sync_cursor=SYNC_CURSOR)
 
     index.update.assert_called_with(doc_id=sync_job.id, doc=expected_doc_source_update)
+
+
+@pytest.mark.asyncio
+async def test_sync_job_claim_with_connector_api(set_env):
+    source = {"_id": "1"}
+    index = Mock()
+    index.api.connector_sync_job_claim = AsyncMock(return_value={"result": "updated"})
+
+    sync_job = SyncJob(elastic_index=index, doc_source=source)
+    sync_job.index.feature_use_connectors_api = True
+    await sync_job.claim(sync_cursor=SYNC_CURSOR)
+
+    index.api.connector_sync_job_claim.assert_called_with(
+        sync_job_id=sync_job.id, worker_hostname=ANY, sync_cursor=SYNC_CURSOR
+    )
 
 
 @pytest.mark.asyncio
@@ -821,6 +837,7 @@ async def test_sync_job_claim_fails():
 async def test_sync_job_update_metadata():
     source = {"_id": "1"}
     index = Mock()
+    index.feature_use_connectors_api = False
     index.update = AsyncMock(return_value=1)
     ingestion_stats = {
         "indexed_document_count": 1,
@@ -843,6 +860,33 @@ async def test_sync_job_update_metadata():
     )
 
     index.update.assert_called_with(doc_id=sync_job.id, doc=expected_doc_source_update)
+
+
+@pytest.mark.asyncio
+async def test_sync_job_update_metadata_with_connector_api():
+    source = {"_id": "1"}
+    index = Mock()
+    index.feature_use_connectors_api = True
+    index.api.connector_sync_job_update_stats = AsyncMock()
+    ingestion_stats = {
+        "indexed_document_count": 1,
+        "indexed_document_volume": 13,
+        "deleted_document_count": 0,
+    }
+    connector_metadata = {"foo": "bar"}
+
+    sync_job = SyncJob(elastic_index=index, doc_source=source)
+
+    await sync_job.update_metadata(
+        ingestion_stats=ingestion_stats | {"blah": 0},
+        connector_metadata=connector_metadata,
+    )
+
+    index.api.connector_sync_job_update_stats.assert_called_with(
+        sync_job_id=sync_job.id,
+        ingestion_stats=ingestion_stats,
+        metadata=connector_metadata,
+    )
 
 
 @pytest.mark.asyncio
@@ -1425,6 +1469,7 @@ async def test_connector_update_last_sync_scheduled_at_by_job_type(
 async def test_connector_validate_filtering_not_edited():
     index = Mock()
     index.update = AsyncMock()
+    index.feature_use_connectors_api = False
     index.fetch_response_by_id = AsyncMock(return_value=DOC_SOURCE)
     validator = Mock()
     validator.validate_filtering = AsyncMock()
@@ -1441,6 +1486,7 @@ async def test_connector_validate_filtering_invalid():
     doc_source = deepcopy(DOC_SOURCE_WITH_EDITED_FILTERING)
     index = Mock()
     index.update = AsyncMock()
+    index.feature_use_connectors_api = False
     index.fetch_response_by_id = AsyncMock(return_value=doc_source)
     validation_result = FilteringValidationResult(
         state=FilteringValidationState.INVALID,
@@ -1477,6 +1523,7 @@ async def test_connector_validate_filtering_valid():
     doc_source = deepcopy(DOC_SOURCE_WITH_EDITED_FILTERING)
     index = Mock()
     index.update = AsyncMock()
+    index.feature_use_connectors_api = False
     index.fetch_response_by_id = AsyncMock(return_value=doc_source)
     validation_result = FilteringValidationResult()
     validator = Mock()
@@ -1511,6 +1558,7 @@ async def test_connector_validate_filtering_with_race_condition():
     doc_source = deepcopy(DOC_SOURCE_WITH_EDITED_FILTERING)
     index = Mock()
     index.update = AsyncMock()
+    index.feature_use_connectors_api = False
     validation_result = FilteringValidationResult()
     validator = Mock()
     validator.validate_filtering = AsyncMock(return_value=validation_result)
@@ -1540,6 +1588,61 @@ async def test_connector_validate_filtering_with_race_condition():
         doc=expected_validation_update_doc,
         if_seq_no=doc_source["_seq_no"],
         if_primary_term=doc_source["_primary_term"],
+    )
+
+
+@pytest.mark.asyncio
+async def test_connector_validate_filtering_invalid_with_connector_api(set_env):
+    doc_source = deepcopy(DOC_SOURCE_WITH_EDITED_FILTERING)
+    index = Mock()
+    index.api.connector_update_filtering_draft_validation = AsyncMock()
+    index.api.connector_activate_filtering_draft = AsyncMock()
+    index.feature_use_connectors_api = True
+    index.fetch_response_by_id = AsyncMock(return_value=doc_source)
+    validation_result = FilteringValidationResult(
+        state=FilteringValidationState.INVALID,
+        errors=[FilterValidationError(ids=[1], messages="something wrong")],
+    )
+    validator = Mock()
+    validator.validate_filtering = AsyncMock(return_value=validation_result)
+
+    connector = Connector(elastic_index=index, doc_source=doc_source)
+    await connector.validate_filtering(validator=validator)
+
+    validator.validate_filtering.assert_awaited()
+    index.api.connector_update_filtering_draft_validation.assert_awaited_once_with(
+        connector_id=CONNECTOR_ID,
+        validation_result=validation_result.to_dict(),
+    )
+    index.api.connector_activate_filtering_draft.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_connector_validate_filtering_valid_with_connector_api(set_env):
+    doc_source = deepcopy(DOC_SOURCE_WITH_EDITED_FILTERING)
+    index = Mock()
+    index.api.connector_update_filtering_draft_validation = AsyncMock()
+    index.api.connector_activate_filtering_draft = AsyncMock()
+    index.feature_use_connectors_api = True
+    index.fetch_response_by_id = AsyncMock(return_value=doc_source)
+    validation_result = FilteringValidationResult(
+        state=FilteringValidationState.VALID,
+        errors=[],
+    )
+    validator = Mock()
+    validator.validate_filtering = AsyncMock(return_value=validation_result)
+
+    connector = Connector(elastic_index=index, doc_source=doc_source)
+    await connector.validate_filtering(validator=validator)
+
+    validator.validate_filtering.assert_awaited()
+    index.api.connector_update_filtering_draft_validation.assert_awaited_once_with(
+        connector_id=CONNECTOR_ID,
+        validation_result=validation_result.to_dict(),
+    )
+
+    index.api.connector_activate_filtering_draft.assert_awaited_once_with(
+        connector_id=CONNECTOR_ID,
     )
 
 
@@ -1902,11 +2005,42 @@ async def test_create_job(index_method, trigger_method, set_env):
     }
 
     sync_job_index = SyncJobIndex(elastic_config=config["elasticsearch"])
+    sync_job_index.feature_use_connectors_api = False
     await sync_job_index.create(
         connector=connector, trigger_method=trigger_method, job_type=JobType.INCREMENTAL
     )
 
     index_method.assert_called_with(expected_index_doc)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "trigger_method, job_type",
+    [
+        (JobTriggerMethod.ON_DEMAND, JobType.FULL),
+        (JobTriggerMethod.ON_DEMAND, JobType.INCREMENTAL),
+        (JobTriggerMethod.ON_DEMAND, JobType.ACCESS_CONTROL),
+        (JobTriggerMethod.SCHEDULED, JobType.FULL),
+        (JobTriggerMethod.SCHEDULED, JobType.INCREMENTAL),
+        (JobTriggerMethod.SCHEDULED, JobType.ACCESS_CONTROL),
+    ],
+)
+async def test_create_job_with_connector_api(trigger_method, job_type, set_env):
+    connector = Mock()
+    connector.id = "id"
+    config = load_config(CONFIG)
+    sync_job_index = SyncJobIndex(elastic_config=config["elasticsearch"])
+    sync_job_index.feature_use_connectors_api = True
+    sync_job_index.api.connector_sync_job_create = AsyncMock()
+    await sync_job_index.create(
+        connector=connector, trigger_method=trigger_method, job_type=job_type
+    )
+
+    sync_job_index.api.connector_sync_job_create.assert_awaited_once_with(
+        connector_id=connector.id,
+        trigger_method=trigger_method.value,
+        job_type=job_type.value,
+    )
 
 
 @pytest.mark.asyncio
@@ -1951,6 +2085,7 @@ async def test_create_jobs_with_correct_target_index(
     }
 
     sync_job_index = SyncJobIndex(elastic_config=config["elasticsearch"])
+    sync_job_index.feature_use_connectors_api = False
     await sync_job_index.create(
         connector=connector,
         trigger_method=JobTriggerMethod.SCHEDULED,
