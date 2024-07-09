@@ -322,6 +322,7 @@ def retryable_aiohttp_call(retries):
             while retry <= retries:
                 try:
                     async for item in func(*args, **kwargs, retry_count=retry):
+                        print(f"Yeilding item {item}")
                         yield item
                     break
                 except (NotFound, BadRequestError):
@@ -408,9 +409,13 @@ class MicrosoftAPISession:
             headers = {"authorization": f"Bearer {token}"}
             self._logger.debug(f"Posting to Sharepoint Endpoint: {absolute_url}.")
 
+            if (absolute_url.endswith("/$batch")):
+                self._logger.debug(f"With payload: {payload}")
+
             async with self._http_session.post(
                 absolute_url, headers=headers, json=payload
             ) as resp:
+                self._logger.debug(f"Response from {absolute_url}")
                 if absolute_url.endswith("/$batch"):  # response code of $batch lies
                     await self._check_batch_items_for_errors(absolute_url, resp)
                 yield resp
@@ -455,6 +460,7 @@ class MicrosoftAPISession:
                 absolute_url,
                 headers=headers,
             ) as resp:
+                self._logger.debug(resp)
                 yield resp
         except aiohttp.client_exceptions.ClientOSError:
             self._logger.warning(
@@ -462,8 +468,10 @@ class MicrosoftAPISession:
             )
             raise
         except ClientResponseError as e:
+            self._logger.warning("Client response error")
             await self._handle_client_response_error(absolute_url, e, retry_count)
         except ClientPayloadError as e:
+            self._logger.warning("Client payload error")
             await self._handle_client_payload_error(e, retry_count)
 
     async def _handle_client_payload_error(self, e, retry_count):
@@ -601,6 +609,10 @@ class SharepointOnlineClient:
     async def site_role_assignments(self, site_web_url):
         self._validate_sharepoint_rest_url(site_web_url)
         expand = "Member/users,RoleDefinitionBindings"
+
+        if ("sharepoint.com/contentstorage" in site_web_url):
+            self._logger.debug("Skipping 'contentstorage'")
+            return
 
         url = f"{site_web_url}/_api/web/roleassignments?$expand={expand}"
 
