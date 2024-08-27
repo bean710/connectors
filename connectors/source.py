@@ -9,8 +9,8 @@
 import asyncio
 import importlib
 import re
-from contextlib import asynccontextmanager, contextmanager
-from datetime import date, datetime
+from contextlib import asynccontextmanager
+from datetime import date, datetime, time
 from decimal import Decimal
 from enum import Enum
 from functools import cache
@@ -683,7 +683,7 @@ class BaseDataSource:
             elif isinstance(value, dict):
                 for key, svalue in value.items():
                     value[key] = _serialize(svalue)
-            elif isinstance(value, (datetime, date)):
+            elif isinstance(value, (datetime, date, time)):
                 value = value.isoformat()
             elif isinstance(value, Decimal128):
                 value = value.to_decimal()
