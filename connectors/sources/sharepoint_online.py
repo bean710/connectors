@@ -10,6 +10,7 @@ from collections.abc import Iterable, Sized
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from functools import partial, wraps
+from json import decoder
 
 import aiofiles
 import aiohttp
@@ -410,7 +411,10 @@ class MicrosoftAPISession:
     async def _get_json(self, absolute_url):
         self._logger.debug(f"Fetching url: {absolute_url}")
         async with self._get(absolute_url) as resp:
-            return await resp.json()
+            try:
+                return await resp.json()
+            except (decoder.JSONDecodeError):
+                self._logger.error(resp)
 
     @asynccontextmanager
     @retryable_aiohttp_call(retries=DEFAULT_RETRY_COUNT)
