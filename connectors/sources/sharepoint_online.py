@@ -337,9 +337,9 @@ def retryable_aiohttp_call(retries):
                         print(f"Yeilding item {item}")
                         yield item
                     break
-                except (NotFound, BadRequestError):
+                except (NotFound):
                     raise
-                except Exception:
+                except (Exception, BadRequestError):
                     if retry >= retries:
                         raise
                     retry += 1
@@ -891,6 +891,25 @@ class SharepointOnlineClient:
         except NotFound:
             return
 
+    async def does_site_list_exist(
+        self, site_web_url, site_list_name
+    ):
+        self._validate_sharepoint_rest_url(site_web_url)
+
+        url = f"{site_web_url}/_api/lists/GetByTitle('{site_list_name}')"
+
+        try:
+            await self._rest_api_client.fetch(url)
+            self._logger.debug(f"Found list {site_list_name} in site {site_web_url}")
+            return True
+        except NotFound:
+            return False
+        except (BadRequestError, UnexpectedClientError):
+            self._logger.warning(
+                f"Received error response when retrieving list: `{site_list_name}` in site: `{site_web_url}`"
+            )
+            return False
+    
     async def site_list_item_has_unique_role_assignments(
         self, site_web_url, site_list_name, list_item_id
     ):
@@ -1985,6 +2004,7 @@ class SharepointOnlineDataSource(BaseDataSource):
         site_id = site.get("id")
         site_web_url = site.get("webUrl")
         site_collection = nested_get_from_dict(site, ["siteCollection", "hostname"])
+        site_list_exists = await self.client.does_site_list_exist(site_web_url, site_list_name)
         async for list_item in self.client.site_list_items(site_id, site_list_id):
             if not check_timestamp or (
                 check_timestamp
@@ -2012,6 +2032,7 @@ class SharepointOnlineDataSource(BaseDataSource):
                 if (
                     self._dls_enabled()
                     and self.configuration["fetch_unique_list_item_permissions"]
+                    and site_list_exists
                 ):
                     has_unique_role_assignments = (
                         await self.client.site_list_item_has_unique_role_assignments(
