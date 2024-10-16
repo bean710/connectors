@@ -766,6 +766,9 @@ class SharepointOnlineClient:
                         "name"
                     ] not in allowed_root_sites:
                         continue
+                    # Filter out Microsoft Loop site 'contentstorage'
+                    if site["name"] == "contentstorage":
+                        continue
                     yield site
         except PermissionsMissing as exception:
             if allowed_root_sites == [WILDCARD]:
