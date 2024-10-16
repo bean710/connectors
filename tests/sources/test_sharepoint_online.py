@@ -1048,14 +1048,62 @@ class TestSharepointOnlineClient:
 
     @pytest.mark.asyncio
     async def test_site_collections(self, client, patch_scroll):
-        actual_items = ["1", "2", "3", "4"]
+        first_site_collection = {
+            "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#sites/$entity",
+            "createdDateTime": "2023-12-12T12:00:00.000Z",
+            "description": "This is the first test site collection",
+            "id": "site-id-1",
+            "lastModifiedDateTime": "2023-12-12T12:00:00.000Z",
+            "name": "fake-site-collection-1",
+            "webUrl": "https://example.sharepoint.com",
+            "displayName": "Fake Site Collection",
+            "root": {},
+            "siteCollection": {"hostname": "example.sharepoint.com"},
+        }
+        second_site_collection = {
+            "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#sites/$entity",
+            "createdDateTime": "2023-12-12T12:00:00.000Z",
+            "description": "This is the second test site collection",
+            "id": "site-id-2",
+            "lastModifiedDateTime": "2023-12-12T12:00:00.000Z",
+            "name": "fake-site-collection-2",
+            "webUrl": "https://example.sharepoint.com",
+            "displayName": "Fake Site Collection",
+            "root": {},
+            "siteCollection": {"hostname": "example.sharepoint.com"},
+        }
 
-        returned_items = await self._execute_scrolling_method(
-            client.site_collections, patch_scroll, actual_items
+        patch_scroll.side_effect = AsyncIterator(
+            [[first_site_collection, second_site_collection]]
         )
+        returned_items = []
+        async for site_collection in client.site_collections():
+            returned_items.append(site_collection)
 
-        assert len(returned_items) == len(actual_items)
-        assert returned_items == actual_items
+        assert len(returned_items) == 2
+        assert returned_items == [first_site_collection, second_site_collection]
+
+    @pytest.mark.asyncio
+    async def test_site_collections_when_permission_missing(
+        self, client, patch_fetch, patch_scroll
+    ):
+        actual_response = {
+            "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#sites/$entity",
+            "createdDateTime": "2023-12-12T12:00:00.000Z",
+            "description": "This is a test site collection",
+            "id": "site-id",
+            "lastModifiedDateTime": "2023-12-12T12:00:00.000Z",
+            "name": "fake-site-collection",
+            "webUrl": "https://example.sharepoint.com",
+            "displayName": "Fake Site Collection",
+            "root": {},
+            "siteCollection": {"hostname": "example.sharepoint.com"},
+        }
+
+        patch_scroll.side_effect = PermissionsMissing()
+        patch_fetch.side_effect = [actual_response]
+        async for site_collection in client.site_collections():
+            assert site_collection == actual_response
 
     @pytest.mark.asyncio
     async def test_sites_wildcard(self, client, patch_scroll):
@@ -1145,6 +1193,32 @@ class TestSharepointOnlineClient:
 
         assert len(returned_items) == 3
         assert returned_items == expected_items
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "exception, raises",
+        [
+            (
+                PermissionsMissing(),
+                PermissionsMissing,
+            ),
+            (
+                ClientResponseError(
+                    status=400,
+                    request_info=aiohttp.RequestInfo(
+                        real_url="", method=None, headers=None, url=""
+                    ),
+                    history=None,
+                ),
+                ClientResponseError,
+            ),
+        ],
+    )
+    async def test_all_sites_with_error(self, client, patch_scroll, exception, raises):
+        sharepoint_host = "example.sharepoint.com"
+        patch_scroll.side_effect = exception
+        with pytest.raises(raises):
+            await anext(client._all_sites(sharepoint_host, []))
 
     @pytest.mark.asyncio
     async def test_site_drives(self, client, patch_scroll):
@@ -2235,7 +2309,7 @@ class TestSharepointOnlineDataSource:
                 self.site_drives
             )
             assert len([i for i in results if i["object_type"] == "drive_item"]) == sum(
-                [len(j) for j in self.drive_items]
+                len(j) for j in self.drive_items
             )
             assert len([i for i in results if i["object_type"] == "site_list"]) == len(
                 self.site_lists
@@ -2308,7 +2382,7 @@ class TestSharepointOnlineDataSource:
                 for site_drive in site_drives
             )
 
-            assert len(drive_items) == sum([len(j) for j in self.drive_items])
+            assert len(drive_items) == sum(len(j) for j in self.drive_items)
 
             expected_drive_item_access_control = [
                 _prefix_user_id(USER_ONE_ID),
@@ -2367,9 +2441,11 @@ class TestSharepointOnlineDataSource:
     ):
         async with create_spo_source() as source:
             with pytest.raises(SyncCursorEmpty):
-                async for _doc, _download_func, _operation in source.get_docs_incrementally(
-                    sync_cursor=sync_cursor
-                ):
+                async for (
+                    _doc,
+                    _download_func,
+                    _operation,
+                ) in source.get_docs_incrementally(sync_cursor=sync_cursor):
                     pass
 
     @pytest.mark.asyncio
@@ -2382,9 +2458,9 @@ class TestSharepointOnlineDataSource:
 
         sync_cursor = {"site_drives": {}, "cursor_timestamp": self.month_ago}
         for site_drive in self.site_drives:
-            sync_cursor["site_drives"][
-                site_drive["id"]
-            ] = "http://fakesharepoint.com/deltalink"
+            sync_cursor["site_drives"][site_drive["id"]] = (
+                "http://fakesharepoint.com/deltalink"
+            )
 
         deleted = 0
         for page in self.drive_items_delta:
@@ -2642,7 +2718,9 @@ class TestSharepointOnlineDataSource:
 
             drive_items_with_permissions = []
 
-            async for drive_item_with_permission in source._drive_items_batch_with_permissions(
+            async for (
+                drive_item_with_permission
+            ) in source._drive_items_batch_with_permissions(
                 drive_id, drive_items_batch, "dummy_site_web_url"
             ):
                 drive_items_with_permissions.append(drive_item_with_permission)
@@ -2663,7 +2741,9 @@ class TestSharepointOnlineDataSource:
 
             drive_items_without_permissions = []
 
-            async for drive_item_without_permissions in source._drive_items_batch_with_permissions(
+            async for (
+                drive_item_without_permissions
+            ) in source._drive_items_batch_with_permissions(
                 drive_id, drive_items_batch, "dummy_site_web_url"
             ):
                 drive_items_without_permissions.append(drive_item_without_permissions)
@@ -2684,7 +2764,9 @@ class TestSharepointOnlineDataSource:
 
             drive_items_without_permissions = []
 
-            async for drive_item_without_permissions in source._drive_items_batch_with_permissions(
+            async for (
+                drive_item_without_permissions
+            ) in source._drive_items_batch_with_permissions(
                 drive_id, drive_items_batch, "dummy_site_web_url"
             ):
                 drive_items_without_permissions.append(drive_item_without_permissions)
@@ -2723,7 +2805,9 @@ class TestSharepointOnlineDataSource:
 
             drive_items_with_permissions = []
 
-            async for drive_item_with_permission in source._drive_items_batch_with_permissions(
+            async for (
+                drive_item_with_permission
+            ) in source._drive_items_batch_with_permissions(
                 drive_id, drive_items_batch, "dummy_site_web_url"
             ):
                 drive_items_with_permissions.append(drive_item_with_permission)
@@ -2989,12 +3073,15 @@ class TestSharepointOnlineDataSource:
         attachment = {"odata.id": "1", "_original_filename": "file.ppt"}
         message = "This is the text content of drive item"
 
-        with patch(
-            "connectors.content_extraction.ContentExtraction.extract_text",
-            return_value=message,
-        ) as extraction_service_mock, patch(
-            "connectors.content_extraction.ContentExtraction.get_extraction_config",
-            return_value={"host": "http://localhost:8090"},
+        with (
+            patch(
+                "connectors.content_extraction.ContentExtraction.extract_text",
+                return_value=message,
+            ) as extraction_service_mock,
+            patch(
+                "connectors.content_extraction.ContentExtraction.get_extraction_config",
+                return_value={"host": "http://localhost:8090"},
+            ),
         ):
 
             async def download_func(attachment_id, async_buffer):
@@ -3021,12 +3108,15 @@ class TestSharepointOnlineDataSource:
         attachment = {"odata.id": "1", "_original_filename": "file.ppt"}
         message = "This is the text content of drive item"
 
-        with patch(
-            "connectors.content_extraction.ContentExtraction.extract_text",
-            return_value=message,
-        ) as extraction_service_mock, patch(
-            "connectors.content_extraction.ContentExtraction.get_extraction_config",
-            return_value={"host": "http://localhost:8090"},
+        with (
+            patch(
+                "connectors.content_extraction.ContentExtraction.extract_text",
+                return_value=message,
+            ) as extraction_service_mock,
+            patch(
+                "connectors.content_extraction.ContentExtraction.get_extraction_config",
+                return_value={"host": "http://localhost:8090"},
+            ),
         ):
 
             async def download_func(attachment_id, async_buffer):
@@ -3095,12 +3185,15 @@ class TestSharepointOnlineDataSource:
         }
         message = "This is the text content of drive item"
 
-        with patch(
-            "connectors.content_extraction.ContentExtraction.extract_text",
-            return_value=message,
-        ) as extraction_service_mock, patch(
-            "connectors.content_extraction.ContentExtraction.get_extraction_config",
-            return_value={"host": "http://localhost:8090"},
+        with (
+            patch(
+                "connectors.content_extraction.ContentExtraction.extract_text",
+                return_value=message,
+            ) as extraction_service_mock,
+            patch(
+                "connectors.content_extraction.ContentExtraction.get_extraction_config",
+                return_value={"host": "http://localhost:8090"},
+            ),
         ):
 
             async def download_func(drive_id, drive_item_id, async_buffer):
@@ -3134,12 +3227,15 @@ class TestSharepointOnlineDataSource:
         }
         message = "This is the text content of drive item"
 
-        with patch(
-            "connectors.content_extraction.ContentExtraction.extract_text",
-            return_value=message,
-        ) as extraction_service_mock, patch(
-            "connectors.content_extraction.ContentExtraction.get_extraction_config",
-            return_value={"host": "http://localhost:8090"},
+        with (
+            patch(
+                "connectors.content_extraction.ContentExtraction.extract_text",
+                return_value=message,
+            ) as extraction_service_mock,
+            patch(
+                "connectors.content_extraction.ContentExtraction.get_extraction_config",
+                return_value={"host": "http://localhost:8090"},
+            ),
         ):
 
             async def download_func(drive_id, drive_item_id, async_buffer):

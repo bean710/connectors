@@ -13,7 +13,7 @@ import platform
 import re
 import shutil
 import ssl
-import subprocess
+import subprocess  # noqa S404
 import time
 import urllib.parse
 from copy import deepcopy
@@ -115,7 +115,7 @@ def epoch_timestamp_zulu():
 def next_run(quartz_definition, now):
     """Returns the datetime in UTC timezone of the next run."""
     # Year is optional and is never present.
-    seconds, minutes, hours, day_of_month, month, day_of_week, year = (
+    _, minutes, hours, day_of_month, month, day_of_week, year = (
         quartz_definition.split(" ") + [None]
     )[:7]
 
@@ -457,7 +457,7 @@ class ConcurrentTasks:
             )
         elif task.exception():
             logger.error(
-                f"Exception found for task {task.get_name()}: {task.exception()}",
+                f"Exception found for task {task.get_name()}", exc_info=task.exception()
             )
 
     def _add_task(self, coroutine, name=None):

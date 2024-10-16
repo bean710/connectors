@@ -1,3 +1,4 @@
+#
 # Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
 # or more contributor license agreements. Licensed under the Elastic License 2.0;
 # you may not use this file except in compliance with the Elastic License 2.0.
@@ -24,6 +25,13 @@ def load_config(config_file):
     configuration = dict(_merge_dicts(_default_config(), nested_yaml_config))
     _ent_search_config(configuration)
 
+    return configuration
+
+
+def add_defaults(config, default_config=None):
+    if default_config is None:
+        default_config = _default_config()
+    configuration = dict(_merge_dicts(default_config, config))
     return configuration
 
 
