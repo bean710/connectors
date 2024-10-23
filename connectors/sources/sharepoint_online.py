@@ -767,7 +767,7 @@ class SharepointOnlineClient:
                     ] not in allowed_root_sites:
                         continue
                     # Filter out Microsoft Loop site 'contentstorage'
-                    if "contentstorage" in site["name"]:
+                    if "contentstorage" in site["name"] or "contentstorage" in site['webUrl']:
                         continue
                     self._logger.debug(site)
                     yield site
