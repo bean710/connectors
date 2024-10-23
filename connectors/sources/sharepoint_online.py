@@ -769,6 +769,7 @@ class SharepointOnlineClient:
                     # Filter out Microsoft Loop site 'contentstorage'
                     if "contentstorage" in site["name"]:
                         continue
+                    self._logger.debug(site)
                     yield site
         except PermissionsMissing as exception:
             if allowed_root_sites == [WILDCARD]:
