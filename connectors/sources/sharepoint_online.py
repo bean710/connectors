@@ -767,7 +767,7 @@ class SharepointOnlineClient:
                     ] not in allowed_root_sites:
                         continue
                     # Filter out Microsoft Loop site 'contentstorage'
-                    if site["name"] == "contentstorage":
+                    if "contentstorage" in site["name"]:
                         continue
                     yield site
         except PermissionsMissing as exception:
@@ -1406,6 +1406,9 @@ class SharepointOnlineDataSource(BaseDataSource):
 
         self._logger.debug(f"Looking at site: {site['id']} with url {site['webUrl']}")
         if not self._dls_enabled():
+            return [], []
+
+        if 'saeinternational.sharepoint.com/contentstorage' in site['webUrl']:
             return [], []
 
         def _is_site_admin(user):
