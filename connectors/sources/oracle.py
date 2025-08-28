@@ -52,6 +52,10 @@ class OracleQueries(Queries):
 
     def table_data(self, **kwargs):
         """Query to get the table data"""
+        if kwargs['timestamp'] is not None:
+            timestamp = kwargs['timestamp']
+            return f"SELECT * FROM {kwargs['table']} WHERE LAST_UPDATE_DATE >= {timestamp}"
+        
         return f"SELECT * FROM {kwargs['table']}"
 
     def table_last_update_time(self, **kwargs):
@@ -83,6 +87,7 @@ class OracleClient:
         oracle_home,
         wallet_config,
         logger_,
+        updated_date_column,
         retry_count=DEFAULT_RETRY_COUNT,
         fetch_size=DEFAULT_FETCH_SIZE,
     ):
@@ -99,6 +104,7 @@ class OracleClient:
         self.wallet_config = wallet_config
         self.retry_count = retry_count
         self.fetch_size = fetch_size
+        self.updated_date_column = updated_date_column
 
         self.connection = None
         self.queries = OracleQueries()
@@ -270,6 +276,9 @@ class OracleClient:
             record_count += 1
             yield data
         self._logger.info(f"Found {record_count} records for table '{table}'")
+    
+    def get_updated_date_column(self):
+        return self.updated_date_column
 
 
 class OracleDataSource(BaseDataSource):
@@ -306,6 +315,7 @@ class OracleDataSource(BaseDataSource):
             retry_count=self.configuration["retry_count"],
             fetch_size=self.configuration["fetch_size"],
             logger_=self._logger,
+            updated_date_column=self.configuration["updated_date_column"],
         )
 
     def _set_internal_logger(self):
@@ -416,6 +426,13 @@ class OracleDataSource(BaseDataSource):
                 "type": "str",
                 "ui_restrictions": ["advanced"],
             },
+            "updated_date_column": {
+                "default_value": "LAST_UPDATE_DATE",
+                "label": "The column name in the database which stores the date the row was last updated",
+                "order": 14,
+                "required": True,
+                "type": "str",
+            },
         }
 
     async def close(self):
@@ -449,17 +466,6 @@ class OracleDataSource(BaseDataSource):
                 keys = await self.oracle_client.get_table_primary_key(table=table)
                 keys = map_column_names(column_names=keys, tables=[table])
                 if keys:
-                    try:
-                        last_update_time = (
-                            await self.oracle_client.get_table_last_update_time(
-                                table=table
-                            )
-                        )
-                    except Exception as e:
-                        self._logger.warning(
-                            f"Unable to fetch last updated time for table '{table}'; error: {e}"
-                        )
-                        last_update_time = None
                     streamer = self.oracle_client.data_streamer(table=table)
                     column_names = await anext(streamer)
                     column_names = map_column_names(
@@ -467,6 +473,7 @@ class OracleDataSource(BaseDataSource):
                     )
                     async for row in streamer:
                         row = dict(zip(column_names, row, strict=True))
+                        last_update_time = row.get(self.oracle_client.get_updated_date_column())
                         keys_value = ""
                         for key in keys:
                             keys_value += f"{row.get(key)}_" if row.get(key) else ""
