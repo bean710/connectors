@@ -14,9 +14,7 @@ from unittest.mock import ANY, AsyncMock, Mock, call, patch
 import pytest
 from elasticsearch import ApiError, BadRequestError
 
-from connectors.es import Mappings
 from connectors.es.management_client import ESManagementClient
-from connectors.es.settings import Settings
 from connectors.es.sink import (
     BIN_DOCS_DOWNLOADED,
     BULK_OPERATIONS,
@@ -42,6 +40,7 @@ from connectors.protocol.connectors import (
     INDEXED_DOCUMENT_COUNT,
     INDEXED_DOCUMENT_VOLUME,
 )
+from connectors.utils import ErrorMonitor, TooManyErrors
 from tests.commons import AsyncIterator
 
 INDEX = "some-index"
@@ -60,6 +59,7 @@ DOC_ONE_DIFFERENT_TIMESTAMP = {
 
 DOC_TWO = {"_id": 2, "_timestamp": TIMESTAMP}
 DOC_THREE = {"_id": 3, "_timestamp": TIMESTAMP}
+DOC_FOUR = {"_id": 4, "_timestamp": TIMESTAMP}
 
 BULK_ACTION_ERROR = "some error"
 
@@ -185,10 +185,6 @@ async def test_prepare_content_index(mock_responses):
     language_code = "en"
     config = {"host": "http://nowhere.com:9200", "user": "tarek", "password": "blah"}
     headers = {"X-Elastic-Product": "Elasticsearch"}
-    settings = Settings(language_code=language_code, analysis_icu=False).to_hash()
-    # prepare-index, with mappings
-
-    mappings = Mappings.default_text_fields_mappings(is_connectors_index=True)
     index_name = "search-new-index"
 
     response = {
@@ -204,32 +200,18 @@ async def test_prepare_content_index(mock_responses):
         body=json.dumps(response),
     )
 
-    mock_responses.put(
-        f"http://nowhere.com:9200/{index_name}/_mapping",
-        headers=headers,
-        payload=mappings,
-        body='{"acknowledged": True}',
-    )
-
-    mock_responses.put(
-        f"http://nowhere.com:9200/{index_name}/_settings",
-        headers=headers,
-        payload=settings,
-        body='{"acknowledged": True}',
-    )
-
     es = SyncOrchestrator(config)
     es._sink = Mock()
     es._extractor = Mock()
     with mock.patch.object(
         es.es_management_client,
-        "ensure_content_index_mappings",
-    ) as put_mapping_mock:
+        "create_content_index",
+    ) as create_index_mock:
         await es.prepare_content_index(index_name, language_code)
 
         await es.close()
 
-        put_mapping_mock.assert_called_with(index_name, mappings)
+        create_index_mock.assert_not_called()
 
 
 def set_responses(mock_responses, ts=None):
@@ -281,7 +263,7 @@ def set_responses(mock_responses, ts=None):
     )
 
     mock_responses.put(
-        "http://nowhere.com:9200/_bulk?pipeline=ent-search-generic-ingestion",
+        "http://nowhere.com:9200/_bulk?pipeline=search-default-ingestion",
         payload={
             "took": 7,
             "errors": False,
@@ -336,10 +318,14 @@ async def test_async_bulk(mock_responses):
                 return
             return {"TEXT": "DATA", "_timestamp": timestamp, "_id": "1"}
 
-        yield {
-            "_id": "1",
-            "_timestamp": datetime.datetime.now().isoformat(),
-        }, _dl, "index"
+        yield (
+            {
+                "_id": "1",
+                "_timestamp": datetime.datetime.now().isoformat(),
+            },
+            _dl,
+            "index",
+        )
         yield {"_id": "3"}, _dl_none, "index"
 
     await es.async_bulk("search-some-index", get_docs(), pipeline, JobType.FULL)
@@ -376,7 +362,8 @@ async def test_async_bulk(mock_responses):
 def index_operation(doc):
     # deepcopy as get_docs mutates docs
     doc_copy = deepcopy(doc)
-    doc_id = doc_copy["id"] = doc_copy.pop("_id")
+    doc_id = str(doc_copy.pop("_id"))
+    doc_copy["id"] = doc_id
 
     return {"_op_type": "index", "_index": INDEX, "_id": doc_id, "doc": doc_copy}
 
@@ -384,13 +371,14 @@ def index_operation(doc):
 def update_operation(doc):
     # deepcopy as get_docs mutates docs
     doc_copy = deepcopy(doc)
-    doc_id = doc_copy["id"] = doc_copy.pop("_id")
+    doc_id = str(doc_copy.pop("_id"))
+    doc_copy["id"] = doc_id
 
     return {"_op_type": "update", "_index": INDEX, "_id": doc_id, "doc": doc_copy}
 
 
 def delete_operation(doc):
-    return {"_op_type": "delete", "_index": INDEX, "_id": doc["_id"]}
+    return {"_op_type": "delete", "_index": INDEX, "_id": str(doc["_id"])}
 
 
 def end_docs_operation():
@@ -429,6 +417,14 @@ def lazy_download_fake(doc):
     async def lazy_download(**kwargs):
         # also deepcopy to prevent side effects as docs get mutated in get_docs
         return deepcopy(doc)
+
+    return lazy_download
+
+
+def crashing_lazy_download_fake():
+    async def lazy_download(**kwargs):
+        msg = "Could not download"
+        raise Exception(msg)
 
     return lazy_download
 
@@ -735,7 +731,7 @@ async def test_get_docs(
     lazy_downloads = await lazy_downloads_mock()
 
     yield_existing_documents_metadata.return_value = AsyncIterator(
-        [(doc["_id"], doc["_timestamp"]) for doc in existing_docs]
+        [(str(doc["_id"]), doc["_timestamp"]) for doc in existing_docs]
     )
 
     with mock.patch("connectors.utils.ConcurrentTasks", return_value=lazy_downloads):
@@ -1025,7 +1021,7 @@ async def test_get_access_control_docs(
     expected_total_docs_deleted,
 ):
     yield_existing_documents_metadata.return_value = AsyncIterator(
-        [(doc["_id"], doc["_timestamp"]) for doc in existing_docs]
+        [(str(doc["_id"]), doc["_timestamp"]) for doc in existing_docs]
     )
 
     queue = await queue_mock()
@@ -1131,6 +1127,7 @@ def test_bulk_populate_stats(res, expected_result):
     sink = Sink(
         client=None,
         queue=None,
+        error_monitor=Mock(),
         chunk_size=0,
         pipeline=None,
         chunk_mem_size=0,
@@ -1166,6 +1163,7 @@ async def test_batch_bulk_with_retry():
     sink = Sink(
         client=client,
         queue=None,
+        error_monitor=Mock(),
         chunk_size=0,
         pipeline={"name": "pipeline"},
         chunk_mem_size=0,
@@ -1189,6 +1187,68 @@ async def test_batch_bulk_with_retry():
 
 
 @pytest.mark.asyncio
+async def test_batch_bulk_with_error_monitor():
+    config = {
+        "username": "elastic",
+        "password": "changeme",
+        "host": "http://nowhere.com:9200",
+    }
+    client = ESManagementClient(config)
+    client.client = AsyncMock()
+    sink = Sink(
+        client=client,
+        queue=None,
+        error_monitor=ErrorMonitor(max_consecutive_errors=10),
+        chunk_size=0,
+        pipeline={"name": "pipeline"},
+        chunk_mem_size=0,
+        max_concurrency=0,
+        max_retries=3,
+        retry_interval=10,
+    )
+
+    def _create_response(num_successful, num_failed):
+        call_result = {"items": []}
+        for id_ in range(num_successful):
+            call_result["items"].append(
+                {OP_UPDATE: {"_id": str(id_), "result": "updated"}}
+            )
+
+        for id_ in range(num_failed):
+            call_result["items"].append(
+                {
+                    OP_UPDATE: {
+                        "_id": str(num_successful + id_),
+                        "result": "failed",
+                        "error": "something went wrong",
+                    }
+                }
+            )
+
+        return call_result
+
+    # First add 45 successful items and 5 failed
+    first_call_result = _create_response(45, 5)
+
+    # Then add 40 successful items and 10 failed
+    second_call_result = _create_response(40, 10)
+
+    # Lastly add 0 successful items and 1 failed
+    # This should fail the test as max consecutive_error_count=10
+    # 10 errors came last in second call, and this one just triggers it
+    third_call_result = _create_response(0, 1)
+
+    client.client.bulk = AsyncMock(
+        side_effect=[first_call_result, second_call_result, third_call_result]
+    )
+
+    await sink._batch_bulk([], {OP_INDEX: {}, OP_UPDATE: {}, OP_DELETE: {}})
+    await sink._batch_bulk([], {OP_INDEX: {}, OP_UPDATE: {}, OP_DELETE: {}})
+    with pytest.raises(TooManyErrors):
+        await sink._batch_bulk([], {OP_INDEX: {}, OP_UPDATE: {}, OP_DELETE: {}})
+
+
+@pytest.mark.asyncio
 async def test_batch_bulk_with_errors(patch_logger):
     config = {
         "username": "elastic",
@@ -1200,6 +1260,7 @@ async def test_batch_bulk_with_errors(patch_logger):
     sink = Sink(
         client=client,
         queue=None,
+        error_monitor=Mock(),
         chunk_size=0,
         pipeline={"name": "pipeline"},
         chunk_mem_size=0,
@@ -1219,7 +1280,7 @@ async def test_batch_bulk_with_errors(patch_logger):
         }
         client.client.bulk = AsyncMock(return_value=mock_result)
         await sink._batch_bulk([], {OP_INDEX: {"1": 20}, OP_UPDATE: {}, OP_DELETE: {}})
-        patch_logger.assert_present(f"operation index failed, {error}")
+        patch_logger.assert_present(f"operation index failed for doc 1, {error}")
 
 
 @patch("connectors.es.sink.CANCELATION_TIMEOUT", -1)
@@ -1272,14 +1333,38 @@ async def test_extractor_put_doc():
     doc = {"id": 123}
     queue = Mock()
     queue.put = AsyncMock()
-    extractor = Extractor(
-        None,
-        queue,
-        INDEX,
-    )
+    extractor = Extractor(None, queue, INDEX)
 
     await extractor.put_doc(doc)
     queue.put.assert_awaited_once_with(doc)
+
+
+@pytest.mark.asyncio
+@mock.patch(
+    "connectors.es.management_client.ESManagementClient.yield_existing_documents_metadata"
+)
+@mock.patch("connectors.utils.ConcurrentTasks.cancel")
+async def test_extractor_get_docs_when_downloads_fail(
+    yield_existing_documents_metadata, concurrent_tasks_cancel
+):
+    queue = await queue_mock()
+
+    yield_existing_documents_metadata.return_value = AsyncIterator([])
+
+    docs_from_source = [
+        (DOC_ONE, crashing_lazy_download_fake(), "index"),
+        (DOC_TWO, crashing_lazy_download_fake(), "index"),
+        (DOC_THREE, crashing_lazy_download_fake(), "index"),
+        (DOC_FOUR, crashing_lazy_download_fake(), "index"),
+    ]
+    # deep copying docs is needed as get_docs mutates the document ids which has side effects on other test
+    # instances
+    doc_generator = AsyncIterator([deepcopy(doc) for doc in docs_from_source])
+
+    extractor = await setup_extractor(queue, content_extraction_enabled=True)
+
+    await extractor.run(doc_generator, JobType.FULL)
+    concurrent_tasks_cancel.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -1287,11 +1372,7 @@ async def test_force_canceled_extractor_put_doc():
     doc = {"id": 123}
     queue = Mock()
     queue.put = AsyncMock()
-    extractor = Extractor(
-        None,
-        queue,
-        INDEX,
-    )
+    extractor = Extractor(None, queue, INDEX)
 
     extractor.force_cancel()
     with pytest.raises(ForceCanceledError):
@@ -1326,6 +1407,7 @@ async def test_sink_fetch_doc():
     sink = Sink(
         None,
         queue,
+        error_monitor=Mock(),
         chunk_size=0,
         pipeline={"name": "pipeline"},
         chunk_mem_size=0,
@@ -1347,6 +1429,7 @@ async def test_force_canceled_sink_fetch_doc():
     sink = Sink(
         None,
         queue,
+        error_monitor=Mock(),
         chunk_size=0,
         pipeline={"name": "pipeline"},
         chunk_mem_size=0,
@@ -1368,6 +1451,7 @@ async def test_force_canceled_sink_with_other_errors(patch_logger):
     sink = Sink(
         None,
         queue,
+        error_monitor=Mock(),
         chunk_size=0,
         pipeline={"name": "pipeline"},
         chunk_mem_size=0,
@@ -1419,11 +1503,11 @@ async def test_cancel_sync(extractor_task_done, sink_task_done, force_cancel):
     es._sink = Mock()
     es._sink.force_cancel = Mock()
 
-    es._extractor_task = Mock()
+    es._extractor_task = mock.create_autospec(asyncio.Task)
     es._extractor_task.cancel = Mock()
     es._extractor_task.done = Mock(side_effect=extractor_task_done)
 
-    es._sink_task = Mock()
+    es._sink_task = mock.create_autospec(asyncio.Task)
     es._sink_task.cancel = Mock()
     es._sink_task.done = Mock(side_effect=sink_task_done)
 
@@ -1440,6 +1524,7 @@ async def test_cancel_sync(extractor_task_done, sink_task_done, force_cancel):
             es._sink.force_cancel.assert_not_called()
 
 
+@pytest.mark.asyncio
 async def test_extractor_run_when_mem_full_is_raised():
     docs_from_source = [
         {"_id": 1},
@@ -1463,11 +1548,7 @@ async def test_extractor_run_when_mem_full_is_raised():
     # instances
     doc_generator = AsyncIterator([(doc, None, "") for doc in docs_from_source])
 
-    extractor = Extractor(
-        es_client,
-        queue,
-        INDEX,
-    )
+    extractor = Extractor(es_client, queue, INDEX)
 
     await extractor.run(doc_generator, JobType.FULL)
 
@@ -1489,6 +1570,7 @@ async def test_should_not_log_bulk_operations_if_doc_id_tracing_is_disabled(
     sink = Sink(
         client=client,
         queue=Mock(),
+        error_monitor=Mock(),
         chunk_size=0,
         pipeline={"name": "pipeline"},
         chunk_mem_size=0,
@@ -1572,6 +1654,7 @@ async def test_should_log_bulk_operations_if_doc_id_tracing_is_enabled(
     sink = Sink(
         client=client,
         queue=Mock(),
+        error_monitor=Mock(),
         chunk_size=0,
         pipeline={"name": "pipeline"},
         chunk_mem_size=0,
@@ -1602,6 +1685,7 @@ async def test_should_log_error_when_id_is_missing(patch_logger):
     sink = Sink(
         client=client,
         queue=Mock(),
+        error_monitor=Mock(),
         chunk_size=0,
         pipeline={"name": "pipeline"},
         chunk_mem_size=0,
@@ -1637,6 +1721,7 @@ async def test_should_log_error_when_unknown_action_item_returned(patch_logger):
     sink = Sink(
         client=client,
         queue=Mock(),
+        error_monitor=Mock(),
         chunk_size=0,
         pipeline={"name": "pipeline"},
         chunk_mem_size=0,

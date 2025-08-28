@@ -17,6 +17,7 @@
 Elasticsearch <== Sink <== queue <== Extractor <== generator
 
 """
+
 import asyncio
 import copy
 import functools
@@ -27,8 +28,8 @@ from connectors.config import (
     DEFAULT_ELASTICSEARCH_MAX_RETRIES,
     DEFAULT_ELASTICSEARCH_RETRY_INTERVAL,
 )
+from connectors.es import TIMESTAMP_FIELD
 from connectors.es.management_client import ESManagementClient
-from connectors.es.settings import TIMESTAMP_FIELD, Mappings
 from connectors.filtering.basic_rule import BasicRuleEngine, parse
 from connectors.logger import logger, tracer
 from connectors.protocol import Filter, JobType
@@ -47,11 +48,13 @@ from connectors.utils import (
     DEFAULT_QUEUE_SIZE,
     ConcurrentTasks,
     Counters,
+    ErrorMonitor,
     MemQueue,
     aenumerate,
     get_size,
     iso_utc,
     retryable,
+    sanitize,
 )
 
 __all__ = ["SyncOrchestrator"]
@@ -110,6 +113,10 @@ class ElasticsearchOverloadedError(Exception):
         self.__cause__ = cause
 
 
+class DocumentIngestionError(Exception):
+    pass
+
+
 class Sink:
     """Send bulk operations in batches by consuming a queue.
 
@@ -136,6 +143,7 @@ class Sink:
         max_concurrency,
         max_retries,
         retry_interval,
+        error_monitor,
         logger_=None,
         enable_bulk_operations_logging=False,
     ):
@@ -145,6 +153,7 @@ class Sink:
         self.pipeline = pipeline
         self.chunk_mem_size = chunk_mem_size * 1024 * 1024
         self.bulk_tasks = ConcurrentTasks(max_concurrency=max_concurrency)
+        self.error_monitor = error_monitor
         self.max_retires = max_retries
         self.retry_interval = retry_interval
         self.error = None
@@ -197,7 +206,9 @@ class Sink:
             for item in res["items"]:
                 for op, data in item.items():
                     if "error" in data:
-                        self._logger.error(f"operation {op} failed, {data['error']}")
+                        self._logger.error(
+                            f"operation {op} failed for doc {data['_id']}, {data['error']}"
+                        )
 
         self._populate_stats(stats, res)
 
@@ -272,18 +283,19 @@ class Sink:
             successful_result = result in SUCCESSFUL_RESULTS
             if not successful_result:
                 if "error" in item[action_item]:
+                    message = f"Failed to execute '{action_item}' on document with id '{doc_id}'. Error: {item[action_item].get('error')}"
+                    self.error_monitor.track_error(DocumentIngestionError(message))
                     if do_log:
-                        self._logger.debug(
-                            f"Failed to execute '{action_item}' on document with id '{doc_id}'. Error: {item[action_item].get('error')}"
-                        )
+                        self._logger.debug(message)
                     self.counters.increment(RESULT_ERROR, namespace=BULK_RESPONSES)
                 else:
+                    message = f"Executed '{action_item}' on document with id '{doc_id}', but got non-successful result: {result}"
+                    self.error_monitor.track_error(DocumentIngestionError(message))
                     if do_log:
-                        self._logger.debug(
-                            f"Executed '{action_item}' on document with id '{doc_id}', but got non-successful result: {result}"
-                        )
+                        self._logger.debug(message)
                     self.counters.increment(RESULT_UNDEFINED, namespace=BULK_RESPONSES)
             else:
+                self.error_monitor.track_success()
                 if do_log:
                     self._logger.debug(
                         f"Successfully executed '{action_item}' on document with id '{doc_id}'. Result: {result}"
@@ -295,7 +307,12 @@ class Sink:
             for op, data in item.items():
                 # "result" is only present in successful operations
                 if "result" not in data:
-                    del stats[op][data["_id"]]
+                    if data["_id"] in stats[op]:
+                        del stats[op][data["_id"]]
+                    else:
+                        self._logger.debug(
+                            f"Document {data['_id']} not in stats for operation: {op}"
+                        )
 
         self.counters.increment(
             INDEXED_DOCUMENT_COUNT, len(stats[OP_INDEX]) + len(stats[OP_UPDATE])
@@ -452,24 +469,31 @@ class Extractor:
         self.skip_unchanged_documents = skip_unchanged_documents
 
     async def _deferred_index(self, lazy_download, doc_id, doc, operation):
-        data = await lazy_download(doit=True, timestamp=doc[TIMESTAMP_FIELD])
+        try:
+            data = await lazy_download(doit=True, timestamp=doc[TIMESTAMP_FIELD])
 
-        if data is not None:
-            self.counters.increment(BIN_DOCS_DOWNLOADED)
-            data.pop("_id", None)
-            data.pop(TIMESTAMP_FIELD, None)
-            doc.update(data)
+            if data is not None:
+                self.counters.increment(BIN_DOCS_DOWNLOADED)
+                data.pop("_id", None)
+                data.pop(TIMESTAMP_FIELD, None)
+                doc.update(data)
 
-        doc.pop("_original_filename", None)
+            doc.pop("_original_filename", None)
 
-        await self.put_doc(
-            {
-                "_op_type": operation,
-                "_index": self.index,
-                "_id": doc_id,
-                "doc": doc,
-            }
-        )
+            await self.put_doc(
+                {
+                    "_op_type": operation,
+                    "_index": self.index,
+                    "_id": doc_id,
+                    "doc": doc,
+                }
+            )
+        except ForceCanceledError:
+            raise
+        except Exception as ex:
+            self._logger.error(
+                f"Failed to do deferred index operation for doc {doc_id}: {ex}"
+            )
 
     def force_cancel(self):
         self._canceled = True
@@ -481,17 +505,22 @@ class Extractor:
         await self.queue.put(doc)
 
     async def run(self, generator, job_type):
+        sanitized_generator = (
+            (sanitize(doc), *other) async for doc, *other in generator
+        )
         try:
             match job_type:
                 case JobType.FULL:
-                    await self.get_docs(generator)
+                    await self.get_docs(sanitized_generator)
                 case JobType.INCREMENTAL:
                     if self.skip_unchanged_documents:
-                        await self.get_docs(generator, skip_unchanged_documents=True)
+                        await self.get_docs(
+                            sanitized_generator, skip_unchanged_documents=True
+                        )
                     else:
-                        await self.get_docs_incrementally(generator)
+                        await self.get_docs_incrementally(sanitized_generator)
                 case JobType.ACCESS_CONTROL:
-                    await self.get_access_control_docs(generator)
+                    await self.get_access_control_docs(sanitized_generator)
                 case _:
                     raise UnsupportedJobType
         except asyncio.CancelledError:
@@ -511,7 +540,7 @@ class Extractor:
                 )
                 return
 
-            self._logger.critical("Document extractor failed", exc_info=True)
+            self._logger.error("Document extractor failed", exc_info=True)
             await self.put_doc(EXTRACTOR_ERROR)
             self.error = e
 
@@ -542,7 +571,8 @@ class Extractor:
                 if count % self.display_every == 0:
                     self._log_progress()
 
-                doc_id = doc["id"] = doc.pop("_id")
+                doc_id = doc.pop("_id")
+                doc["id"] = doc_id
 
                 if self.basic_rule_engine and not self.basic_rule_engine.should_ingest(
                     doc
@@ -598,10 +628,21 @@ class Extractor:
                             "doc": doc,
                         }
                     )
+                # We try raising every loop to not miss a moment when
+                # too many errors happened when downloading
+                lazy_downloads.raise_any_exception()
 
                 await asyncio.sleep(0)
+
+            # Sit and wait until an error happens
+            await lazy_downloads.join(raise_on_error=True)
+        except Exception as ex:
+            self._logger.error(f"Extractor failed with an error: {ex}")
+            lazy_downloads.cancel()
+            raise
         finally:
             # wait for all downloads to be finished
+            # even if we errored out
             await lazy_downloads.join()
 
         await self.enqueue_docs_to_delete(existing_ids)
@@ -647,7 +688,8 @@ class Extractor:
                 if count % self.display_every == 0:
                     self._log_progress()
 
-                doc_id = doc["id"] = doc.pop("_id")
+                doc_id = doc.pop("_id")
+                doc["id"] = doc_id
 
                 if self.basic_rule_engine and not self.basic_rule_engine.should_ingest(
                     doc
@@ -704,13 +746,7 @@ class Extractor:
         self._logger.info("Starting access control doc lookups")
         generator = self._decorate_with_metrics_span(generator)
 
-        existing_ids = {
-            doc_id: last_update_timestamp
-            async for (
-                doc_id,
-                last_update_timestamp,
-            ) in self.client.yield_existing_documents_metadata(self.index)
-        }
+        existing_ids = await self._load_existing_docs()
 
         if self._logger.isEnabledFor(logging.DEBUG):
             self._logger.debug(
@@ -724,7 +760,8 @@ class Extractor:
             if count % self.display_every == 0:
                 self._log_progress()
 
-            doc_id = doc["id"] = doc.pop("_id")
+            doc_id = doc.pop("_id")
+            doc["id"] = doc_id
             doc_exists = doc_id in existing_ids
 
             if doc_exists:
@@ -814,6 +851,8 @@ class SyncOrchestrator:
         self._sink_task = None
         self.error = None
         self.canceled = False
+        error_monitor_config = elastic_config.get("bulk", {}).get("error_monitor", {})
+        self.error_monitor = ErrorMonitor(error_monitor_config)
 
     async def close(self):
         await self.es_management_client.close()
@@ -823,31 +862,20 @@ class SyncOrchestrator:
         # TODO: think how to make it not a proxy method to the client
         return await self.es_management_client.has_active_license_enabled(license_)
 
+    def extract_index_or_alias(self, get_index_response, expected_index_name):
+        return None
+
     async def prepare_content_index(self, index_name, language_code=None):
         """Creates the index, given a mapping/settings if it does not exist."""
         self._logger.debug(f"Checking index {index_name}")
 
-        result = await self.es_management_client.get_index(
+        index = await self.es_management_client.get_index_or_alias(
             index_name, ignore_unavailable=True
         )
-
-        index = result.get(index_name, None)
-
-        mappings = Mappings.default_text_fields_mappings(is_connectors_index=True)
 
         if index:
             # Update the index mappings if needed
             self._logger.debug(f"{index_name} exists")
-
-            # Settings contain analyzers which are being used in the index mappings
-            # Therefore settings must be applied before mappings
-            await self.es_management_client.ensure_content_index_settings(
-                index_name=index_name, index=index, language_code=language_code
-            )
-
-            await self.es_management_client.ensure_content_index_mappings(
-                index_name, mappings
-            )
         else:
             # Create a new index
             self._logger.info(f"Creating content index: {index_name}")
@@ -884,7 +912,7 @@ class SyncOrchestrator:
     async def cancel(self):
         if self._sink_task_running():
             self._logger.info(
-                f"Cancling the Sink task: {self._sink_task.name}"  # pyright: ignore
+                f"Canceling the Sink task: {self._sink_task.get_name()}"  # pyright: ignore
             )
             self._sink_task.cancel()
         else:
@@ -894,7 +922,7 @@ class SyncOrchestrator:
 
         if self._extractor_task_running():
             self._logger.info(
-                f"Canceling the Extractor task: {self._extractor_task.name}"  # pyright: ignore
+                f"Canceling the Extractor task: {self._extractor_task.get_name()}"
             )
             self._extractor_task.cancel()
         else:
@@ -1031,6 +1059,7 @@ class SyncOrchestrator:
             max_concurrency=max_concurrency,
             max_retries=max_bulk_retries,
             retry_interval=retry_interval,
+            error_monitor=self.error_monitor,
             logger_=self._logger,
             enable_bulk_operations_logging=enable_bulk_operations_logging,
         )
@@ -1040,15 +1069,25 @@ class SyncOrchestrator:
         self._sink_task.add_done_callback(functools.partial(self.sink_task_callback))
 
     def sink_task_callback(self, task):
-        if task.exception():
+        if task.cancelled():
+            self._logger.warning(
+                f"{type(self._sink).__name__}: {task.get_name()} was cancelled before completion"
+            )
+        elif task.exception():
             self._logger.error(
-                f"Encountered an error in the sync's {type(self._sink).__name__}: {task.get_name()}: {task.exception()}",
+                f"Encountered an error in the sync's {type(self._sink).__name__}: {task.get_name()}",
+                exc_info=task.exception(),
             )
             self.error = task.exception()
 
     def extractor_task_callback(self, task):
-        if task.exception():
+        if task.cancelled():
+            self._logger.warning(
+                f"{type(self._extractor).__name__}: {task.get_name()} was cancelled before completion"
+            )
+        elif task.exception():
             self._logger.error(
-                f"Encountered an error in the sync's {type(self._extractor).__name__}: {task.get_name()}: {task.exception()}",
+                f"Encountered an error in the sync's {type(self._extractor).__name__}: {task.get_name()}",
+                exc_info=task.exception(),
             )
             self.error = task.exception()

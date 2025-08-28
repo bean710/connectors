@@ -11,9 +11,11 @@ import inspect
 import os
 import platform
 import re
+import secrets
 import shutil
 import ssl
-import subprocess
+import string
+import subprocess  # noqa S404
 import time
 import urllib.parse
 from copy import deepcopy
@@ -115,7 +117,7 @@ def epoch_timestamp_zulu():
 def next_run(quartz_definition, now):
     """Returns the datetime in UTC timezone of the next run."""
     # Year is optional and is never present.
-    seconds, minutes, hours, day_of_month, month, day_of_week, year = (
+    _, minutes, hours, day_of_month, month, day_of_week, year = (
         quartz_definition.split(" ") + [None]
     )[:7]
 
@@ -457,7 +459,7 @@ class ConcurrentTasks:
             )
         elif task.exception():
             logger.error(
-                f"Exception found for task {task.get_name()}: {task.exception()}",
+                f"Exception found for task {task.get_name()}", exc_info=task.exception()
             )
 
     def _add_task(self, coroutine, name=None):
@@ -754,10 +756,10 @@ def truncate_id(_id):
 
 def has_duplicates(strings_list):
     seen = set()
-    for string in strings_list:
-        if string in seen:
+    for s in strings_list:
+        if s in seen:
             return True
-        seen.add(string)
+        seen.add(s)
     return False
 
 
@@ -976,6 +978,15 @@ def nested_get_from_dict(dictionary, keys, default=None):
     return nested_get(dictionary, keys, default)
 
 
+def sanitize(doc):
+    if doc["_id"]:
+        # guarantee that IDs are strings, and not numeric
+        doc["_id"] = str(doc["_id"])
+        doc["id"] = doc["_id"]
+
+    return doc
+
+
 class Counters:
     """
     A utility to provide code readability to managing a collection of counts
@@ -994,3 +1005,112 @@ class Counters:
 
     def to_dict(self):
         return deepcopy(self._storage)
+
+
+class TooManyErrors(Exception):
+    pass
+
+
+class ErrorMonitor:
+    def __init__(
+        self,
+        enabled=True,
+        max_total_errors=1000,
+        max_consecutive_errors=10,
+        max_error_rate=0.15,
+        error_window_size=100,
+        error_queue_size=10,
+    ):
+        # When disabled, only track errors
+        self.enabled = enabled
+
+        self.max_error_rate = max_error_rate
+        self.error_window_size = error_window_size
+        self.error_window = [False] * error_window_size
+        self.error_window_index = 0
+
+        self.error_queue = []
+        self.error_queue_size = error_queue_size
+
+        self.consecutive_error_count = 0
+        self.max_consecutive_errors = max_consecutive_errors
+
+        self.max_total_errors = max_total_errors
+        self.total_success_count = 0
+        self.total_error_count = 0
+
+    def track_success(self):
+        self.consecutive_error_count = 0
+        self.total_success_count += 1
+        self._update_error_window(False)
+
+    def track_error(self, error):
+        self.total_error_count += 1
+        self.consecutive_error_count += 1
+
+        self.error_queue.append(error)
+
+        if len(self.error_queue) > self.error_queue_size:
+            self.error_queue.pop(0)
+
+        self._update_error_window(True)
+        self.last_error = error
+
+        self._raise_if_necessary()
+
+    def _update_error_window(self, value):
+        # We keep the errors array of the size self.error_window_size this way, imagine self.error_window_size = 5
+        # Error array inits as falses:
+        # [ false, false, false, false, false ]
+        # Third document raises an error:
+        # [ false, false, true,  false, false ]
+        #                 ^^^^
+        #                 2 % 5 == 2
+        # Fifth document raises an error:
+        # [ false, false, true,  false, true  ]
+        #                               ^^^^
+        #                               4 % 5 == 4
+        # Sixth document raises an error:
+        # [ true, false, true,   false, true  ]
+        #   ^^^^
+        #   5 % 5 == 0
+        #
+        # Eigth document is successful:
+        # [ true, false, false,  false, true  ]
+        #                ^^^^^
+        #                7 % 5 == 2
+        # And so on.
+        self.error_window[self.error_window_index] = value
+        self.error_window_index = (self.error_window_index + 1) % self.error_window_size
+
+    def _error_window_error_rate(self):
+        if self.error_window_size == 0:
+            return 0
+
+        errors = list(filter(lambda x: x is True, self.error_window))
+
+        error_rate = len(errors) / self.error_window_size
+
+        return error_rate
+
+    def _raise_if_necessary(self):
+        if not self.enabled:
+            return
+
+        if self.consecutive_error_count > self.max_consecutive_errors:
+            msg = f"Exceeded maximum consecutive errors - saw {self.consecutive_error_count} errors in a row. Last error: {self.last_error}"
+            raise TooManyErrors(msg) from self.last_error
+        elif self.total_error_count > self.max_total_errors:
+            msg = f"Exceeded maximum total error count - saw {self.total_error_count} errors. Last error: {self.last_error}"
+            raise TooManyErrors(msg) from self.last_error
+        elif self.error_window_size > 0:
+            error_rate = self._error_window_error_rate()
+            if error_rate > self.max_error_rate:
+                msg = f"Exceeded maximum error ratio of {self.max_error_rate} for last {self.error_window_size} operations. Last error: {self.last_error}"
+                raise TooManyErrors(msg) from self.last_error
+
+
+def generate_random_id(length=4):
+    return "".join(
+        secrets.choice(string.ascii_letters + string.digits) for _ in range(length)
+    )
