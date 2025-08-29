@@ -474,7 +474,7 @@ class OracleDataSource(BaseDataSource):
                     )
                     async for row in streamer:
                         row = dict(zip(column_names, row, strict=True))
-                        last_update_time = iso_utc(parse_datetime_string(row.get(self.oracle_client.get_updated_date_column())))
+                        last_update_time = iso_utc(parse_datetime_string(row.get(f"search.vault_view_{self.oracle_client.get_updated_date_column()}")))
                         keys_value = ""
                         for key in keys:
                             keys_value += f"{row.get(key)}_" if row.get(key) else ""
