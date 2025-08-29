@@ -52,7 +52,7 @@ class OracleQueries(Queries):
 
     def table_data(self, **kwargs):
         """Query to get the table data"""
-        if kwargs['timestamp'] is not None:
+        if timestamp in kwargs:
             timestamp = kwargs['timestamp']
             return f"SELECT * FROM {kwargs['table']} WHERE LAST_UPDATE_DATE >= {timestamp}"
         
