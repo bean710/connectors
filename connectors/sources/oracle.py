@@ -477,7 +477,7 @@ class OracleDataSource(BaseDataSource):
 
                         self._logger.info(row)
 
-                        last_update_time = iso_utc(parse_datetime_string(row.get(f"search.vault_view_{self.oracle_client.get_updated_date_column()}")))
+                        last_update_time = iso_utc(row.get(f"search.vault_view_{self.oracle_client.get_updated_date_column()}"))
                         keys_value = ""
                         for key in keys:
                             keys_value += f"{row.get(key)}_" if row.get(key) else ""
