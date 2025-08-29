@@ -54,7 +54,7 @@ class OracleQueries(Queries):
         """Query to get the table data"""
         if 'timestamp' in kwargs:
             timestamp = kwargs['timestamp']
-            return f"SELECT * FROM {kwargs['table']} WHERE LAST_UPDATE_DATE >= {timestamp}"
+            return f"SELECT * FROM {kwargs['table']} WHERE LAST_UPDATE_DATE >= '{timestamp}'"
         
         return f"SELECT * FROM {kwargs['table']} WHERE LAST_UPDATE_DATE <= 25-AUG-25"
 
