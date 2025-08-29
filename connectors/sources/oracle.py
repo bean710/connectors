@@ -475,7 +475,7 @@ class OracleDataSource(BaseDataSource):
                     async for row in streamer:
                         row = dict(zip(column_names, row, strict=True))
 
-                        self._logger.info(row)
+                        self._logger.debug(row)
 
                         last_update_time = iso_utc(row.get(f"{table.lower()}_{self.oracle_client.get_updated_date_column().lower()}"))
                         keys_value = ""
