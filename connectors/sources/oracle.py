@@ -474,13 +474,14 @@ class OracleDataSource(BaseDataSource):
                     )
                     async for row in streamer:
                         row = dict(zip(column_names, row, strict=True))
+
+                        self._logger.info(row)
+
                         last_update_time = iso_utc(parse_datetime_string(row.get(f"search.vault_view_{self.oracle_client.get_updated_date_column()}")))
                         keys_value = ""
                         for key in keys:
                             keys_value += f"{row.get(key)}_" if row.get(key) else ""
 
-                        self._logger.info(row)
-                        
                         row.update(
                             {
                                 "_id": f"{self.database}_{table}_{keys_value}",
