@@ -478,6 +478,9 @@ class OracleDataSource(BaseDataSource):
                         keys_value = ""
                         for key in keys:
                             keys_value += f"{row.get(key)}_" if row.get(key) else ""
+
+                        self._logger.info(row)
+                        
                         row.update(
                             {
                                 "_id": f"{self.database}_{table}_{keys_value}",
