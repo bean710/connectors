@@ -475,6 +475,7 @@ class OracleDataSource(BaseDataSource):
                                 table=table
                             )
                         )
+                        self._logger.info(f"Most recent update date in the table is {iso_utc(last_update_time)}")
                     except Exception as e:
                         self._logger.warning(
                             f"Unable to fetch last updated time for table '{table}'; error: {e}"
@@ -535,24 +536,13 @@ class OracleDataSource(BaseDataSource):
         self._sync_cursor = sync_cursor
         timestamp = self.last_sync_time()
 
+        self._logger.info(f"Sync cursor time is: {iso_utc(timestamp)}")
+
         table_count = 0
         async for table in self.oracle_client.get_tables_to_fetch():
-            try:
-                last_update_time = (
-                    await self.oracle_client.get_table_last_update_time(
-                        table=table
-                    )
-                )
-            except Exception as e:
-                self._logger.warning(
-                    f"Unable to fetch last updated time for table '{table}'; error: {e}"
-                )
-                last_update_time = None
             table_count += 1
             async for row in self.fetch_documents(table=table, timestamp=timestamp):
                 yield row, None, OP_INDEX
-        
-        self.update_sync_timestamp_cursor(last_update_time)
 
         if table_count < 1:
             self._logger.warning(f"Fetched 0 tables for the database '{self.database}'")
