@@ -475,7 +475,7 @@ class OracleDataSource(BaseDataSource):
                                 table=table
                             )
                         )
-                        last_update_time = parse_datetime_string(last_update_time).strftime('%Y-%m-%d %H:%M:%S')
+                        last_update_time = last_update_time.strftime('%Y-%m-%d %H:%M:%S')
                         self._logger.info(f"Most recent update date in the table is {last_update_time}")
                     except Exception as e:
                         self._logger.warning(
