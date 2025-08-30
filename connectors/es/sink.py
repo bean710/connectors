@@ -564,6 +564,11 @@ class Extractor:
                     # pop out of existing_ids, so they do not get deleted
                     ts = existing_ids.pop(doc_id)
 
+                    if (not TIMESTAMP_FIELD in doc):
+                        self._logger.info("Doc missing timestamp field")
+                    else:
+                        self._logger.info(f"Comparing timestamps: {ts} : {doc[TIMESTAMP_FIELD]}")
+                    
                     if (
                         skip_unchanged_documents
                         and TIMESTAMP_FIELD in doc
