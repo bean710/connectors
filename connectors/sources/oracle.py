@@ -475,6 +475,7 @@ class OracleDataSource(BaseDataSource):
                                 table=table
                             )
                         )
+                        last_update_time = parse_datetime_string(last_update_time).strftime('%Y-%m-%d %H:%M:%S')
                         self._logger.info(f"Most recent update date in the table is {last_update_time}")
                     except Exception as e:
                         self._logger.warning(
@@ -491,7 +492,7 @@ class OracleDataSource(BaseDataSource):
 
                         self._logger.debug(row)
 
-                        last_update_time = iso_utc(parse_datetime_string(row.get(f"{table.lower()}_{self.oracle_client.get_updated_date_column().lower()}")))
+                        doc_update_time = iso_utc(parse_datetime_string(row.get(f"{table.lower()}_{self.oracle_client.get_updated_date_column().lower()}")))
                         keys_value = ""
                         for key in keys:
                             keys_value += f"{row.get(key)}_" if row.get(key) else ""
@@ -499,7 +500,7 @@ class OracleDataSource(BaseDataSource):
                         row.update(
                             {
                                 "_id": f"{self.database}_{table}_{keys_value}",
-                                "_timestamp": last_update_time or iso_utc(),
+                                "_timestamp": doc_update_time or iso_utc(),
                                 "Database": self.database,
                                 "Table": table,
                             }
@@ -535,6 +536,7 @@ class OracleDataSource(BaseDataSource):
     async def get_docs_incrementally(self, sync_cursor, filtering=None):
         self._sync_cursor = sync_cursor
         timestamp = self.last_sync_time()
+        timestamp = parse_datetime_string(timestamp).strftime('%Y-%m-%d %H:%M:%S')
 
         self._logger.info(f"Sync cursor time is: {timestamp}")
 
