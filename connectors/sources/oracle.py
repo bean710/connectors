@@ -493,7 +493,7 @@ class OracleDataSource(BaseDataSource):
                         self._logger.debug(row)
 
                         row_time = row.get(f"{table.lower()}_{self.oracle_client.get_updated_date_column().lower()}")
-                        self._logger.info(f"Row time: {row_time}")
+                        #self._logger.info(f"Row time: {row_time}")
                         doc_update_time = iso_utc(row_time)
                         keys_value = ""
                         for key in keys:
