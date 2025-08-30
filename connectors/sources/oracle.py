@@ -25,6 +25,7 @@ from connectors.sources.generic_database import (
     map_column_names,
 )
 from connectors.utils import iso_utc, parse_datetime_string
+from connectors.es.sink import OP_INDEX
 
 DEFAULT_PROTOCOL = "TCP"
 DEFAULT_ORACLE_HOME = ""
@@ -248,7 +249,7 @@ class OracleClient:
         )
         return last_update_time
 
-    async def data_streamer(self, table):
+    async def data_streamer(self, table, timestamp=None):
         """Streaming data from a table
 
         Args:
@@ -267,6 +268,7 @@ class OracleClient:
                 self.get_cursor,
                 self.queries.table_data(
                     table=table,
+                    timestamp=timestamp,
                 ),
             ),
             fetch_columns=True,
@@ -449,7 +451,7 @@ class OracleDataSource(BaseDataSource):
             msg = f"Can't connect to Oracle on {self.oracle_client.host}"
             raise Exception(msg) from e
 
-    async def fetch_documents(self, table):
+    async def fetch_documents(self, table, timestamp=None):
         """Fetches all the table entries and format them in Elasticsearch documents
 
         Args:
@@ -467,7 +469,18 @@ class OracleDataSource(BaseDataSource):
                 keys = await self.oracle_client.get_table_primary_key(table=table)
                 keys = map_column_names(column_names=keys, tables=[table])
                 if keys:
-                    streamer = self.oracle_client.data_streamer(table=table)
+                    try:
+                        last_update_time = (
+                            await self.oracle_client.get_table_last_update_time(
+                                table=table
+                            )
+                        )
+                    except Exception as e:
+                        self._logger.warning(
+                            f"Unable to fetch last updated time for table '{table}'; error: {e}"
+                        )
+                        last_update_time = None
+                    streamer = self.oracle_client.data_streamer(table=table, timestamp=timestamp)
                     column_names = await anext(streamer)
                     column_names = map_column_names(
                         column_names=column_names, tables=[table]
@@ -491,6 +504,8 @@ class OracleDataSource(BaseDataSource):
                             }
                         )
                         yield self.serialize(doc=row)
+
+                    self.update_sync_timestamp_cursor(last_update_time)
                 else:
                     self._logger.warning(
                         f"Skipping '{table}' table from database '{self.database}' since no primary key is associated with it. Assign a primary key to the table to index it in the next sync interval."
@@ -513,5 +528,31 @@ class OracleDataSource(BaseDataSource):
             table_count += 1
             async for row in self.fetch_documents(table=table):
                 yield row, None
+        if table_count < 1:
+            self._logger.warning(f"Fetched 0 tables for the database '{self.database}'")
+
+    async def get_docs_incrementally(self, sync_cursor, filtering=None):
+        self._sync_cursor = sync_cursor
+        timestamp = self.last_sync_time()
+
+        table_count = 0
+        async for table in self.oracle_client.get_tables_to_fetch():
+            try:
+                last_update_time = (
+                    await self.oracle_client.get_table_last_update_time(
+                        table=table
+                    )
+                )
+            except Exception as e:
+                self._logger.warning(
+                    f"Unable to fetch last updated time for table '{table}'; error: {e}"
+                )
+                last_update_time = None
+            table_count += 1
+            async for row in self.fetch_documents(table=table, timestamp=timestamp):
+                yield row, None, OP_INDEX
+        
+        self.update_sync_timestamp_cursor(last_update_time)
+
         if table_count < 1:
             self._logger.warning(f"Fetched 0 tables for the database '{self.database}'")
