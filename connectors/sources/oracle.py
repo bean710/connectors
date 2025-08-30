@@ -62,7 +62,7 @@ class OracleQueries(Queries):
     def table_last_update_time(self, **kwargs):
         """Query to get the last update time of the table"""
         # return f"SELECT SCN_TO_TIMESTAMP(MAX(ora_rowscn)) from {kwargs['table']}"
-        return f"SELECT MAX(LAST_UPDATE_DATE) FROM {kwargs['table']}"
+        return f"SELECT MAX(LAST_UPDATE_DATE) FROM {kwargs['table']} WHERE LAST_UPDATE_DATE <= '31-JUL-2025'"
 
     def table_data_count(self, **kwargs):
         """Query to get the number of rows in the table"""
