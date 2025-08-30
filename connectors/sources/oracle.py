@@ -494,7 +494,7 @@ class OracleDataSource(BaseDataSource):
 
                         row_time = row.get(f"{table.lower()}_{self.oracle_client.get_updated_date_column().lower()}")
                         self._logger.info(f"Row time: {row_time}")
-                        doc_update_time = iso_utc(parse_datetime_string(row_time))
+                        doc_update_time = iso_utc(row_time)
                         keys_value = ""
                         for key in keys:
                             keys_value += f"{row.get(key)}_" if row.get(key) else ""
