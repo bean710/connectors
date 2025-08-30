@@ -55,7 +55,7 @@ class OracleQueries(Queries):
         """Query to get the table data"""
         if 'timestamp' in kwargs and kwargs['timestamp'] is not None:
             timestamp = kwargs['timestamp']
-            return f"SELECT * FROM {kwargs['table']} WHERE LAST_UPDATE_DATE >= '{timestamp}'"
+            return f"SELECT * FROM {kwargs['table']} WHERE LAST_UPDATE_DATE >= TO DATE ('{timestamp}', 'DD-MM-YYYY HH24:MI:SS')"
         
         return f"SELECT * FROM {kwargs['table']} WHERE LAST_UPDATE_DATE >= '01-JUL-2025'"
 
