@@ -57,7 +57,7 @@ class OracleQueries(Queries):
             timestamp = kwargs['timestamp']
             return f"SELECT * FROM {kwargs['table']} WHERE LAST_UPDATE_DATE >= '{timestamp}'"
         
-        return f"SELECT * FROM {kwargs['table']} WHERE LAST_UPDATE_DATE >= '01-JUL-2025' AND LAST_UPDATE_DATE <= 31-JUL-2025'"
+        return f"SELECT * FROM {kwargs['table']} WHERE LAST_UPDATE_DATE >= '01-JUL-2025' AND LAST_UPDATE_DATE <= '31-JUL-2025'"
 
     def table_last_update_time(self, **kwargs):
         """Query to get the last update time of the table"""
