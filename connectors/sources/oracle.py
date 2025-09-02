@@ -53,16 +53,18 @@ class OracleQueries(Queries):
 
     def table_data(self, **kwargs):
         """Query to get the table data"""
-        if 'timestamp' in kwargs and kwargs['timestamp'] is not None:
+        if 'timestamp' in kwargs and kwargs['timestamp'] is not None and 'updated_date_column' in kwargs and kwargs['updated_date_column'] is not None:
             timestamp = kwargs['timestamp']
-            return f"SELECT * FROM {kwargs['table']} WHERE LAST_UPDATE_DATE >= TO_DATE ('{timestamp}', 'YYYY-MM-DD HH24:MI:SS')"
+            return f"SELECT * FROM {kwargs['table']} WHERE {kwargs['updated_date_column']} >= TO_DATE ('{timestamp}', 'YYYY-MM-DD HH24:MI:SS')"
         
         return f"SELECT * FROM {kwargs['table']}"
 
     def table_last_update_time(self, **kwargs):
         """Query to get the last update time of the table"""
-        # return f"SELECT SCN_TO_TIMESTAMP(MAX(ora_rowscn)) from {kwargs['table']}"
-        return f"SELECT MAX(LAST_UPDATE_DATE) FROM {kwargs['table']}"
+        if 'updated_date_column' in kwargs and kwargs['updated_date_column'] is not None:
+            return f"SELECT MAX({kwargs['updated_date_column']}) FROM {kwargs['table']}"
+
+        return f"SELECT SCN_TO_TIMESTAMP(MAX(ora_rowscn)) from {kwargs['table']}"
 
     def table_data_count(self, **kwargs):
         """Query to get the number of rows in the table"""
@@ -241,6 +243,7 @@ class OracleClient:
                     self.get_cursor,
                     self.queries.table_last_update_time(
                         table=table,
+                        updated_date_column=self.updated_date_column
                     ),
                 ),
                 fetch_size=1,
@@ -269,6 +272,7 @@ class OracleClient:
                 self.queries.table_data(
                     table=table,
                     timestamp=timestamp,
+                    updated_date_column=self.updated_date_column
                 ),
             ),
             fetch_columns=True,
