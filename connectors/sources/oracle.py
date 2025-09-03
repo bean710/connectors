@@ -86,11 +86,12 @@ class OracleClient:
         sid,
         service_name,
         tables,
+        updated_date_column,
+        primary_key_column,
         protocol,
         oracle_home,
         wallet_config,
         logger_,
-        updated_date_column,
         retry_count=DEFAULT_RETRY_COUNT,
         fetch_size=DEFAULT_FETCH_SIZE,
     ):
@@ -102,12 +103,13 @@ class OracleClient:
         self.sid = sid
         self.service_name = service_name
         self.tables = tables
+        self.updated_date_column = updated_date_column
+        self.primary_key_column = primary_key_column
         self.protocol = protocol
         self.oracle_home = oracle_home
         self.wallet_config = wallet_config
         self.retry_count = retry_count
         self.fetch_size = fetch_size
-        self.updated_date_column = updated_date_column
 
         self.connection = None
         self.queries = OracleQueries()
@@ -217,6 +219,10 @@ class OracleClient:
         return row_count
 
     async def get_table_primary_key(self, table):
+        if (self.primary_key_column is not None):
+            self._logger.info(f"Primary key override found: {self.primary_key_column}")
+            return [self.primary_key_column]
+        
         self._logger.debug(f"Extracting primary keys for table '{table}'")
         primary_keys = [
             key
@@ -315,13 +321,14 @@ class OracleDataSource(BaseDataSource):
             sid=self.configuration["sid"],
             service_name=self.configuration["service_name"],
             tables=self.configuration["tables"],
+            updated_date_column=self.configuration["updated_date_column"],
+            primary_key_column=self.configuration["primary_key_column"],
             protocol=self.configuration["oracle_protocol"],
             oracle_home=self.configuration["oracle_home"],
             wallet_config=self.configuration["wallet_configuration_path"],
             retry_count=self.configuration["retry_count"],
             fetch_size=self.configuration["fetch_size"],
             logger_=self._logger,
-            updated_date_column=self.configuration["updated_date_column"],
         )
 
     def _set_internal_logger(self):
