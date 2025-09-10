@@ -572,7 +572,7 @@ class OracleDataSource(BaseDataSource):
 
                         urls_key = f"{table}_file_urls".lower()
 
-                        if urls_key in serialized:
+                        if urls_key in serialized and serialized[urls_key] is not None:
                             urls = json.loads(serialized[urls_key])
 
                             if (isinstance(urls, (list, tuple))):
