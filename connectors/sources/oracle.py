@@ -521,13 +521,17 @@ class OracleDataSource(BaseDataSource):
         
         if (len(paths) == 0):
             return
+        
+        for path in file_paths:
+            extension = self.get_file_extension(path)
+            doc = await self.download_and_extract_file(
+                doc,
+                path,
+                extension,
+                partial(self.fetch_file_content, path)
+            )
 
-        return await self.download_and_extract_file(
-            doc,
-            "FILENAME HERE",
-            "EXTENSION HERE",
-            partial(self.fetch_file_content, "PATH HERE")
-        )
+        return doc
 
 
     async def close(self):
