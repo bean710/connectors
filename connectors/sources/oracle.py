@@ -570,7 +570,12 @@ class OracleDataSource(BaseDataSource):
 
                         serialized = self.serialize(doc=row)
 
-                        serialized[f"{table}_file_urls".lower()] = [url["file_url"] for url in json.loads(serialized[f"{table}_file_urls".lower()])]
+                        urls = json.loads(serialized[f"{table}_file_urls".lower()])
+
+                        if (isinstance(urls, (list, tuple))):
+                            serialized[f"{table}_file_urls".lower()] = [url["file_url"] for url in urls]
+                        else:
+                            serialized[f"{table}_file_urls".lower()] = [urls["file_url"]]
 
                         yield serialized
 
