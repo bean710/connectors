@@ -27,7 +27,7 @@ from connectors.sources.generic_database import (
     is_wildcard,
     map_column_names,
 )
-from connectors.utils import iso_utc, parse_datetime_string
+from connectors.utils import iso_utc, parse_datetime_string, convert_to_b64
 from connectors.es.sink import OP_INDEX
 
 DEFAULT_PROTOCOL = "TCP"
@@ -459,6 +459,38 @@ class OracleDataSource(BaseDataSource):
                 "ui_restrictions": ["advanced"],
             },
         }
+
+    async def handle_file_content_extraction(self, doc, source_filename, temp_filename):
+        """
+        Determines if file content should be extracted locally,
+        or converted to b64 for pipeline extraction.
+
+        Returns the `doc` arg with a new field:
+            - `body` if local content extraction was used
+            - `_attachment` if pipeline extraction will be used
+        """
+        if self.configuration.get("use_text_extraction_service"):
+            if self.extraction_service._check_configured():
+                if "body" in doc and doc["body"] is not None:
+                    doc["body"].push(await self.extraction_service.extract_text(
+                        temp_filename, source_filename
+                    ))
+                else:
+                    doc["body"] = [await self.extraction_service.extract_text(
+                        temp_filename, source_filename
+                    )]
+        else:
+            self._logger.debug(f"Calling convert_to_b64 for file : {source_filename}")
+            await asyncio.to_thread(convert_to_b64, source=temp_filename)
+            async with aiofiles.open(file=temp_filename, mode="r") as async_buffer:
+                if ("_attachment" in doc and doc["_attachment"] is not None):
+                    # base64 on macOS will add a EOL, so we strip() here
+                    doc["_attachment"].push((await async_buffer.read()).strip())
+                else:
+                    doc["_attachment"] = [(await async_buffer.read()).strip()]
+                    
+
+        return doc
     
     async def fetch_file_content(self, paths):
         contents = ""
