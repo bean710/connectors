@@ -14,6 +14,9 @@ from asyncpg.exceptions._base import InternalClientError
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import ProgrammingError
 
+import aiofiles
+import json
+
 from connectors.source import BaseDataSource
 from connectors.sources.generic_database import (
     DEFAULT_FETCH_SIZE,
@@ -456,6 +459,44 @@ class OracleDataSource(BaseDataSource):
                 "ui_restrictions": ["advanced"],
             },
         }
+    
+    async def fetch_file_content(self, paths):
+        contents = ""
+        for path in paths:
+            async with aiofiles.open(path, mode="r") as f:
+                contents += await f.read()
+        return contents
+
+    async def get_content(self, doc, table, timestamp=None, doit=None):
+        if not (doit):
+            return
+        
+        file_url_column = "FILE_URL".lower() # TODO: make this configurable
+        
+        file_paths = doc[f"{table}_{file_url_column}"]
+
+        paths = []
+
+        for path in file_paths:
+            # TODO: Modify path to be relative to mount here 
+            extension = self.get_file_extension(path)
+            file_size = os.path.getsize(path)
+            if not self.can_file_be_downloaded(extension, path, file_size):
+                self._logger.warning(
+                    f"File size {file_size} of {path} bytes is larger than {self.framework_config.max_file_size} bytes. Discarding the file content"
+                )
+                continue
+        
+        if (len(paths) == 0):
+            return
+
+        return await self.download_and_extract_file(
+            doc,
+            "FILENAME HERE",
+            "EXTENSION HERE",
+            partial(self.fetch_file_content, "PATH HERE")
+        )
+
 
     async def close(self):
         self.oracle_client.close()
@@ -526,7 +567,12 @@ class OracleDataSource(BaseDataSource):
                                 "Table": table,
                             }
                         )
-                        yield self.serialize(doc=row)
+
+                        serialized = self.serialize(doc=row)
+
+                        serialized[f"{table}_file_urls"] = json.loads(serialized[f"{table}_file_urls"])
+
+                        yield serialized
 
                     self.update_sync_timestamp_cursor(last_update_time)
                 else:
