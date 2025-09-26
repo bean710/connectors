@@ -509,7 +509,7 @@ class OracleDataSource(BaseDataSource):
     
     async def fetch_file_content(self, path):
         try:
-            async with aiofiles.open(path, mode="r") as f:
+            with open(path, "r") as f:
                 chunk = True
                 while chunk:
                     chunk = f.read(MAX_CHUNK_SIZE) or b""
@@ -533,7 +533,7 @@ class OracleDataSource(BaseDataSource):
         for path in file_paths:
             # TODO: Modify path to be relative to mount here
             true_path = path # path.replace("//edms-tst-mw/usr", "/mnt", 1)
-            
+
             if (not os.path.exists(true_path)):
                 self._logger.error(f"File {true_path} does not exist")
                 continue
