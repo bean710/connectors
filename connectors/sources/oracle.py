@@ -533,6 +533,11 @@ class OracleDataSource(BaseDataSource):
         for path in file_paths:
             # TODO: Modify path to be relative to mount here
             true_path = path # path.replace("//edms-tst-mw/usr", "/mnt", 1)
+            
+            if (not os.path.exists(true_path)):
+                self._logger.error(f"File {true_path} does not exist")
+                continue
+
             extension = self.get_file_extension(true_path)
             file_size = os.path.getsize(true_path)
             if not self.can_file_be_downloaded(extension, true_path, file_size):
