@@ -94,6 +94,7 @@ class OracleClient:
         protocol,
         oracle_home,
         wallet_config,
+        file_location_column,
         logger_,
         retry_count=DEFAULT_RETRY_COUNT,
         fetch_size=DEFAULT_FETCH_SIZE,
@@ -113,6 +114,7 @@ class OracleClient:
         self.wallet_config = wallet_config
         self.retry_count = retry_count
         self.fetch_size = fetch_size
+        self.file_location_column = file_location_column
 
         self.connection = None
         self.queries = OracleQueries()
@@ -294,6 +296,9 @@ class OracleClient:
     
     def get_updated_date_column(self):
         return self.updated_date_column
+    
+    def get_file_location_column(self):
+        return self.file_location_column
 
 
 class OracleDataSource(BaseDataSource):
@@ -331,6 +336,7 @@ class OracleDataSource(BaseDataSource):
             wallet_config=self.configuration["wallet_configuration_path"],
             retry_count=self.configuration["retry_count"],
             fetch_size=self.configuration["fetch_size"],
+            file_location_column=self.configuration["file_location_column"],
             logger_=self._logger,
         )
 
@@ -458,6 +464,14 @@ class OracleDataSource(BaseDataSource):
                 "type": "str",
                 "ui_restrictions": ["advanced"],
             },
+            "file_location_column": {
+                "default_value": "ELASTIC_FILE_URLS",
+                "value": "ELASTIC_FILE_URLS",
+                "label": "Column which has the array of file locations for each document",
+                "order": 16,
+                "required": True,
+                "type": "str",
+            },
         }
 
     async def handle_file_content_extraction(self, doc, source_filename, temp_filename):
@@ -503,26 +517,29 @@ class OracleDataSource(BaseDataSource):
         if not (doit):
             return
         
-        file_url_column = "FILE_URL".lower() # TODO: make this configurable
+        file_url_column = self.oracle_client.get_file_location_column().lower()
         
         file_paths = doc[f"{table}_{file_url_column}"]
 
         paths = []
 
         for path in file_paths:
-            # TODO: Modify path to be relative to mount here 
-            extension = self.get_file_extension(path)
-            file_size = os.path.getsize(path)
-            if not self.can_file_be_downloaded(extension, path, file_size):
+            # TODO: Modify path to be relative to mount here
+            true_path = path # path.replace("//edms-tst-mw/usr", "/mnt", 1)
+            extension = self.get_file_extension(true_path)
+            file_size = os.path.getsize(true_path)
+            if not self.can_file_be_downloaded(extension, true_path, file_size):
                 self._logger.warning(
-                    f"File size {file_size} of {path} bytes is larger than {self.framework_config.max_file_size} bytes. Discarding the file content"
+                    f"File size {file_size} of {true_path} bytes is larger than {self.framework_config.max_file_size} bytes. Discarding the file content"
                 )
                 continue
+
+            paths.append(true_path)
         
         if (len(paths) == 0):
             return
         
-        for path in file_paths:
+        for path in paths:
             extension = self.get_file_extension(path)
             doc = await self.download_and_extract_file(
                 doc,
@@ -606,15 +623,15 @@ class OracleDataSource(BaseDataSource):
 
                         serialized = self.serialize(doc=row)
 
-                        urls_key = f"{table}_file_urls".lower()
+                        urls_key = f"{table}_{self.oracle_client.get_file_location_column()}".lower()
 
                         if urls_key in serialized and serialized[urls_key] is not None:
                             urls = json.loads(serialized[urls_key])
 
                             if (isinstance(urls, (list, tuple))):
-                                serialized[f"{table}_file_urls".lower()] = [url["file_url"] for url in urls]
+                                serialized[urls_key] = [url["file_url"] for url in urls]
                             else:
-                                serialized[f"{table}_file_urls".lower()] = [urls["file_url"]]
+                                serialized[urls_key] = [urls["file_url"]]
 
                         yield serialized
 
