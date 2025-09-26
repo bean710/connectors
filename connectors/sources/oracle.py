@@ -508,11 +508,14 @@ class OracleDataSource(BaseDataSource):
         return doc
     
     async def fetch_file_content(self, path):
-        async with aiofiles.open(path, mode="r") as f:
-            chunk = True
-            while chunk:
-                chunk = f.read(MAX_CHUNK_SIZE) or b""
-                yield chunk
+        try:
+            async with aiofiles.open(path, mode="r") as f:
+                chunk = True
+                while chunk:
+                    chunk = f.read(MAX_CHUNK_SIZE) or b""
+                    yield chunk
+        except FileNotFoundError as error:
+            self._logger.error(f"File {path} does not exist: {error}")
 
     async def get_content(self, doc, table, timestamp=None, doit=None):
         if not (doit):
