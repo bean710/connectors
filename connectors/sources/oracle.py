@@ -507,13 +507,12 @@ class OracleDataSource(BaseDataSource):
 
         return doc
     
-    async def fetch_file_content(self, paths):
-        for path in paths:
-            async with aiofiles.open(path, mode="r") as f:
-                chunk = True
-                while chunk:
-                    chunk = f.read(MAX_CHUNK_SIZE) or b""
-                    yield chunk
+    async def fetch_file_content(self, path):
+        async with aiofiles.open(path, mode="r") as f:
+            chunk = True
+            while chunk:
+                chunk = f.read(MAX_CHUNK_SIZE) or b""
+                yield chunk
 
     async def get_content(self, doc, table, timestamp=None, doit=None):
         if not (doit):
