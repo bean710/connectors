@@ -521,6 +521,9 @@ class OracleDataSource(BaseDataSource):
         
         file_paths = doc[f"{table}_{file_url_column}".lower()]
 
+        if file_paths is None:
+            return
+
         paths = []
 
         for path in file_paths:
