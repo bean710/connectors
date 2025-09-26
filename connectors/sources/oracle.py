@@ -541,6 +541,7 @@ class OracleDataSource(BaseDataSource):
         
         for path in paths:
             extension = self.get_file_extension(path)
+            self._logger.debug(f"Prepping to download file {path}")
             doc = await self.download_and_extract_file(
                 doc,
                 path,
