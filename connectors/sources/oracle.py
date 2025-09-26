@@ -676,7 +676,11 @@ class OracleDataSource(BaseDataSource):
         async for table in self.oracle_client.get_tables_to_fetch():
             table_count += 1
             async for row in self.fetch_documents(table=table, timestamp=timestamp):
-                yield row, None, OP_INDEX
+                content_func = (partial(self.get_content, doc=row, table=table) 
+                                if (row["search.elastic_inl_documents_vw_restricted_flag"] == False 
+                                    or row["search.elastic_inl_documents_vw_restricted_flag"] == "false") 
+                                else None)
+                yield row, content_func, OP_INDEX
 
         if table_count < 1:
             self._logger.warning(f"Fetched 0 tables for the database '{self.database}'")
