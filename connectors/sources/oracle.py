@@ -486,6 +486,12 @@ class OracleDataSource(BaseDataSource):
         """
         if self.configuration.get("use_text_extraction_service"):
             if self.extraction_service._check_configured():
+                doc["body"] = await self.extraction_service.extract_text(
+                    temp_filename, source_filename
+                )
+                return
+
+                # This is for multiple files, should work but not using text extraction service right now
                 if "body" in doc and doc["body"] is not None:
                     doc["body"].push(await self.extraction_service.extract_text(
                         temp_filename, source_filename
@@ -498,6 +504,10 @@ class OracleDataSource(BaseDataSource):
             self._logger.debug(f"Calling convert_to_b64 for file : {source_filename}")
             await asyncio.to_thread(convert_to_b64, source=temp_filename)
             async with aiofiles.open(file=temp_filename, mode="r") as async_buffer:
+                doc["_attachment"] = (await async_buffer.read()).strip()
+                return
+            
+                # The _attachment field cannot be an array
                 if ("_attachment" in doc and doc["_attachment"] is not None):
                     # base64 on macOS will add a EOL, so we strip() here
                     doc["_attachment"].push((await async_buffer.read()).strip())
