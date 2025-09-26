@@ -519,7 +519,7 @@ class OracleDataSource(BaseDataSource):
         
         file_url_column = self.oracle_client.get_file_location_column()
         
-        file_paths = doc[f"{table}_{file_url_column}"]
+        file_paths = doc[f"{table}_{file_url_column}".lower()]
 
         paths = []
 
