@@ -34,6 +34,7 @@ DEFAULT_PROTOCOL = "TCP"
 DEFAULT_ORACLE_HOME = ""
 SID = "sid"
 SERVICE_NAME = "service_name"
+MAX_CHUNK_SIZE = 65536
 
 
 class OracleQueries(Queries):
@@ -507,11 +508,12 @@ class OracleDataSource(BaseDataSource):
         return doc
     
     async def fetch_file_content(self, paths):
-        contents = ""
         for path in paths:
             async with aiofiles.open(path, mode="r") as f:
-                contents += await f.read()
-        return contents
+                chunk = True
+                while chunk:
+                    chunk = f.read(MAX_CHUNK_SIZE) or b""
+                    yield chunk
 
     async def get_content(self, doc, table, timestamp=None, doit=None):
         if not (doit):
@@ -542,6 +544,7 @@ class OracleDataSource(BaseDataSource):
         if (len(paths) == 0):
             return
         
+        # TODO: HANDLE MULTIPLE FILES
         for path in paths:
             extension = self.get_file_extension(path)
             self._logger.debug(f"Prepping to download file {path}")
