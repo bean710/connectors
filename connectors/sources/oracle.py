@@ -509,7 +509,7 @@ class OracleDataSource(BaseDataSource):
     
     async def fetch_file_content(self, path):
         try:
-            with open(path, "r") as f:
+            with open(path, "rb") as f:
                 chunk = True
                 while chunk:
                     chunk = f.read(MAX_CHUNK_SIZE) or b""
