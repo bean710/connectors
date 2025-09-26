@@ -660,6 +660,7 @@ class OracleDataSource(BaseDataSource):
             async for row in self.fetch_documents(table=table):
                 content_func = (partial(self.get_content, doc=row, table=table) 
                                 if (row["search.elastic_inl_documents_vw_restricted_flag"] == False 
+                                    or row["search.elastic_inl_documents_vw_restricted_flag"] == "N"
                                     or row["search.elastic_inl_documents_vw_restricted_flag"] == "false") 
                                 else None)
                 yield row, content_func
@@ -679,7 +680,8 @@ class OracleDataSource(BaseDataSource):
             async for row in self.fetch_documents(table=table, timestamp=timestamp):
                 content_func = (partial(self.get_content, doc=row, table=table) 
                                 if (row["search.elastic_inl_documents_vw_restricted_flag"] == False 
-                                    or row["search.elastic_inl_documents_vw_restricted_flag"] == "false") 
+                                    or row["search.elastic_inl_documents_vw_restricted_flag"] == "N"
+                                    or row["search.elastic_inl_documents_vw_restricted_flag"] == "false")
                                 else None)
                 yield row, content_func, OP_INDEX
 
