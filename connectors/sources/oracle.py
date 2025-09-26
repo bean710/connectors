@@ -547,17 +547,26 @@ class OracleDataSource(BaseDataSource):
             return
         
         # TODO: HANDLE MULTIPLE FILES
-        for path in paths:
-            extension = self.get_file_extension(path)
-            self._logger.debug(f"Prepping to download file {path}")
-            doc = await self.download_and_extract_file(
-                doc,
-                path,
-                extension,
-                partial(self.fetch_file_content, path)
-            )
+        path = paths[0]
+        # for path in paths:
+        #     extension = self.get_file_extension(path)
+        #     self._logger.debug(f"Prepping to download file {path}")
+        #     doc = await self.download_and_extract_file(
+        #         doc,
+        #         path,
+        #         extension,
+        #         partial(self.fetch_file_content, path)
+        #     )
 
-        return doc
+        extension = self.get_file_extension(path)
+        self._logger.debug(f"Prepping to download file {path}")
+
+        return await self.download_and_extract_file(
+            doc,
+            path,
+            extension,
+            partial(self.fetch_file_content, path)
+    )
 
 
     async def close(self):
