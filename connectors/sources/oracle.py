@@ -709,7 +709,7 @@ class OracleDataSource(BaseDataSource):
         table_count = 0
         async for table in self.oracle_client.get_tables_to_fetch():
             table_count += 1
-            async for row in self.fetch_documents(table=table, timestamp=timestamp):
+            async for row in self.fetch_documents(table=table, timestamp=timestamp): # The timestamp param could be removed here to fetch all from DB, but only downlaod from changed docs
                 content_func = (partial(self.get_content, doc=row, table=table) 
                                 if (row["search.elastic_inl_documents_vw_restricted_flag"] == False 
                                     or row["search.elastic_inl_documents_vw_restricted_flag"] == "N"
