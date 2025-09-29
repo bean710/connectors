@@ -551,9 +551,6 @@ class OracleDataSource(BaseDataSource):
             extension = self.get_file_extension(true_path)
             file_size = os.path.getsize(true_path)
             if not self.can_file_be_downloaded(extension, true_path, file_size):
-                self._logger.warning(
-                    f"File size {file_size} of {true_path} bytes is larger than {self.framework_config.max_file_size} bytes. Discarding the file content"
-                )
                 continue
 
             paths.append(true_path)
@@ -576,12 +573,20 @@ class OracleDataSource(BaseDataSource):
         extension = self.get_file_extension(path)
         self._logger.debug(f"Prepping to download file {path}")
 
-        return await self.download_and_extract_file(
+        # This would create a temp file, but since we don't need to "download" files, I think we can just ship straight to extraction
+        # return await self.download_and_extract_file(
+        #     doc,
+        #     path,
+        #     extension,
+        #     partial(self.fetch_file_content, path)
+        # )
+
+        return await self.handle_file_content_extraction(
             doc,
-            path,
-            extension,
-            partial(self.fetch_file_content, path)
-    )
+            source_filename=path,
+            temp_filename=path
+        )
+    
 
 
     async def close(self):
