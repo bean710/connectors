@@ -473,6 +473,15 @@ class OracleDataSource(BaseDataSource):
                 "required": True,
                 "type": "str",
             },
+            "use_text_extraction_service": {
+                "display": "toggle",
+                "label": "Use text extraction service",
+                "order": 17,
+                "tooltip": "Requires a separate deployment of the Elastic Text Extraction Service. Requires that pipeline settings disable text extraction.",
+                "type": "bool",
+                "ui_restrictions": ["advanced"],
+                "value": False,
+            },
         }
 
     async def handle_file_content_extraction(self, doc, source_filename, temp_filename):
