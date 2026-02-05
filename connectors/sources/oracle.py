@@ -15,6 +15,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import ProgrammingError
 
 import aiofiles
+import requests
 import json
 
 from connectors.source import BaseDataSource
@@ -35,6 +36,8 @@ DEFAULT_ORACLE_HOME = ""
 SID = "sid"
 SERVICE_NAME = "service_name"
 MAX_CHUNK_SIZE = 65536
+EDMS_BASE_URL = "https://epaccwa.inl.gov/CMEWebAPI/api/docs/"
+EDMS_URL_PATH = "/doc-file-content/1"
 
 
 class OracleQueries(Queries):
@@ -527,6 +530,8 @@ class OracleDataSource(BaseDataSource):
         return doc
     
     async def fetch_file_content(self, path):
+        url = f"{EDMS_BASE_URL}"
+
         try:
             with open(path, "rb") as f:
                 chunk = True
@@ -669,6 +674,8 @@ class OracleDataSource(BaseDataSource):
                         )
 
                         serialized = self.serialize(doc=row)
+
+                        self._logger.debug(serialized)
 
                         urls_key = f"{table}_{self.oracle_client.get_file_location_column()}".lower()
 
