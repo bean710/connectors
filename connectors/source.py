@@ -736,7 +736,7 @@ class BaseDataSource:
             and not self.configuration.get("use_text_extraction_service")
         ):
             self._logger.warning(
-                f"File size {file_size} of file {filename} is larger than {self.framework_config.max_file_size} bytes. Discarding file content."
+                f"File size {file_size} of file {filename} is larger than {self.framework_config.max_file_size} bytes. Discarding file content.\n{self.configuration.get('use_text_extraction_service')}"
             )
             return False
 

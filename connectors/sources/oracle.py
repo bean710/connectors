@@ -20,6 +20,8 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import ProgrammingError
 
 import aiofiles
+import requests
+import json
 
 from connectors.es.sink import OP_INDEX
 from connectors.source import BaseDataSource
@@ -40,6 +42,9 @@ SID = "sid"
 SERVICE_NAME = "service_name"
 ORACLE_FILE_URLS_FIELD = "_oracle_file_urls"
 DEFAULT_HTTP_DOWNLOAD_CHUNK_SIZE = 1024 * 64
+MAX_CHUNK_SIZE = 65536
+EDMS_BASE_URL = "https://epaccwa.inl.gov/CMEWebAPI/api/docs/"
+EDMS_URL_PATH = "/doc-file-content/1"
 
 
 class OracleQueries(Queries):
@@ -100,6 +105,7 @@ class OracleClient:
         protocol,
         oracle_home,
         wallet_config,
+        file_location_column,
         logger_,
         retry_count=DEFAULT_RETRY_COUNT,
         fetch_size=DEFAULT_FETCH_SIZE,
@@ -119,6 +125,7 @@ class OracleClient:
         self.wallet_config = wallet_config
         self.retry_count = retry_count
         self.fetch_size = fetch_size
+        self.file_location_column = file_location_column
 
         self.connection = None
         self.queries = OracleQueries()
@@ -300,6 +307,9 @@ class OracleClient:
     
     def get_updated_date_column(self):
         return self.updated_date_column
+    
+    def get_file_location_column(self):
+        return self.file_location_column
 
 
 class OracleDataSource(BaseDataSource):
@@ -340,6 +350,7 @@ class OracleDataSource(BaseDataSource):
             wallet_config=self.configuration["wallet_configuration_path"],
             retry_count=self.configuration["retry_count"],
             fetch_size=self.configuration["fetch_size"],
+            file_location_column=self.configuration["file_location_column"],
             logger_=self._logger,
         )
 
@@ -509,6 +520,15 @@ class OracleDataSource(BaseDataSource):
                 "type": "str",
                 "ui_restrictions": ["advanced"],
             },
+            "use_text_extraction_service": {
+                "display": "toggle",
+                "label": "Use text extraction service",
+                "order": 21,
+                "tooltip": "Requires a separate deployment of the Elastic Text Extraction Service. Requires that pipeline settings disable text extraction.",
+                "type": "bool",
+                "ui_restrictions": ["advanced"],
+                "value": False,
+            },
         }
 
     async def handle_file_content_extraction(self, doc, source_filename, temp_filename):
@@ -522,6 +542,12 @@ class OracleDataSource(BaseDataSource):
         """
         if self.configuration.get("use_text_extraction_service"):
             if self.extraction_service._check_configured():
+                doc["body"] = await self.extraction_service.extract_text(
+                    temp_filename, source_filename
+                )
+                return
+
+                # This is for multiple files, should work but not using text extraction service right now
                 if "body" in doc and doc["body"] is not None:
                     doc["body"].append(
                         await self.extraction_service.extract_text(
@@ -538,6 +564,10 @@ class OracleDataSource(BaseDataSource):
             self._logger.debug(f"Calling convert_to_b64 for file : {source_filename}")
             await asyncio.to_thread(convert_to_b64, source=temp_filename)
             async with aiofiles.open(file=temp_filename, mode="r") as async_buffer:
+                doc["_attachment"] = (await async_buffer.read()).strip()
+                return
+            
+                # The _attachment field cannot be an array
                 if ("_attachment" in doc and doc["_attachment"] is not None):
                     # base64 on macOS will add a EOL, so we strip() here
                     doc["_attachment"].append((await async_buffer.read()).strip())
@@ -886,7 +916,11 @@ class OracleDataSource(BaseDataSource):
                 file_urls = row.pop(ORACLE_FILE_URLS_FIELD, [])
                 lazy_download = None
                 if file_urls:
-                    lazy_download = partial(self.get_content, doc=row, file_urls=file_urls)
+                    lazy_download = (partial(self.get_content, doc=row, file_urls=file_urls) 
+                                if (row["search.elastic_inl_documents_vw_restricted_flag"] == False 
+                                    or row["search.elastic_inl_documents_vw_restricted_flag"] == "N"
+                                    or row["search.elastic_inl_documents_vw_restricted_flag"] == "false") 
+                                else None)
                 yield row, lazy_download
         if table_count < 1:
             self._logger.warning(f"Fetched 0 tables for the database '{self.database}'")
@@ -904,7 +938,9 @@ class OracleDataSource(BaseDataSource):
             async for row in self.fetch_documents(table=table, timestamp=timestamp):
                 file_urls = row.pop(ORACLE_FILE_URLS_FIELD, [])
                 lazy_download = None
-                if file_urls:
+                if file_urls and (row["search.elastic_inl_documents_vw_restricted_flag"] == False 
+                                    or row["search.elastic_inl_documents_vw_restricted_flag"] == "N"
+                                    or row["search.elastic_inl_documents_vw_restricted_flag"] == "false"):
                     lazy_download = partial(self.get_content, doc=row, file_urls=file_urls)
                 yield row, lazy_download, OP_INDEX
 
