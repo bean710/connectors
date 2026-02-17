@@ -6,17 +6,22 @@
 """Oracle source module is responsible to fetch documents from Oracle."""
 
 import asyncio
+import csv
+import json
+import netrc
 import os
 from functools import cached_property, partial
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlparse
+
+import aiohttp
 
 from asyncpg.exceptions._base import InternalClientError
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import ProgrammingError
 
 import aiofiles
-import json
 
+from connectors.es.sink import OP_INDEX
 from connectors.source import BaseDataSource
 from connectors.sources.generic_database import (
     DEFAULT_FETCH_SIZE,
@@ -27,13 +32,14 @@ from connectors.sources.generic_database import (
     is_wildcard,
     map_column_names,
 )
-from connectors.utils import iso_utc, parse_datetime_string, convert_to_b64
-from connectors.es.sink import OP_INDEX
+from connectors.utils import convert_to_b64, iso_utc, parse_datetime_string
 
 DEFAULT_PROTOCOL = "TCP"
 DEFAULT_ORACLE_HOME = ""
 SID = "sid"
 SERVICE_NAME = "service_name"
+ORACLE_FILE_URLS_FIELD = "_oracle_file_urls"
+DEFAULT_HTTP_DOWNLOAD_CHUNK_SIZE = 1024 * 64
 
 
 class OracleQueries(Queries):
@@ -310,6 +316,9 @@ class OracleDataSource(BaseDataSource):
             configuration (DataSourceConfiguration): Instance of DataSourceConfiguration class.
         """
         super().__init__(configuration=configuration)
+        self._http_session = None
+        self._netrc_auth = None
+        self._netrc_loaded = False
         self.database = (
             self.configuration["sid"]
             if self.configuration["connection_source"] == SID
@@ -458,6 +467,48 @@ class OracleDataSource(BaseDataSource):
                 "type": "str",
                 "ui_restrictions": ["advanced"],
             },
+            "file_reference_column": {
+                "default_value": "",
+                "label": "Column containing CSV file IDs",
+                "order": 16,
+                "required": False,
+                "type": "str",
+                "ui_restrictions": ["advanced"],
+            },
+            "file_download_url_template": {
+                "default_value": "",
+                "label": "File download URL template",
+                "order": 17,
+                "required": False,
+                "type": "str",
+                "tooltip": "Use {file_id} as a placeholder for the file ID from each row.",
+                "ui_restrictions": ["advanced"],
+            },
+            "file_download_auth_header_name": {
+                "default_value": "",
+                "label": "File download auth header name",
+                "order": 18,
+                "required": False,
+                "type": "str",
+                "ui_restrictions": ["advanced"],
+            },
+            "file_download_auth_header_value": {
+                "default_value": "",
+                "label": "File download auth header value",
+                "order": 19,
+                "required": False,
+                "sensitive": True,
+                "type": "str",
+                "ui_restrictions": ["advanced"],
+            },
+            "netrc_path": {
+                "default_value": "",
+                "label": "Path to .netrc file",
+                "order": 20,
+                "required": False,
+                "type": "str",
+                "ui_restrictions": ["advanced"],
+            },
         }
 
     async def handle_file_content_extraction(self, doc, source_filename, temp_filename):
@@ -472,69 +523,252 @@ class OracleDataSource(BaseDataSource):
         if self.configuration.get("use_text_extraction_service"):
             if self.extraction_service._check_configured():
                 if "body" in doc and doc["body"] is not None:
-                    doc["body"].push(await self.extraction_service.extract_text(
-                        temp_filename, source_filename
-                    ))
+                    doc["body"].append(
+                        await self.extraction_service.extract_text(
+                            temp_filename, source_filename
+                        )
+                    )
                 else:
-                    doc["body"] = [await self.extraction_service.extract_text(
-                        temp_filename, source_filename
-                    )]
+                    doc["body"] = [
+                        await self.extraction_service.extract_text(
+                            temp_filename, source_filename
+                        )
+                    ]
         else:
             self._logger.debug(f"Calling convert_to_b64 for file : {source_filename}")
             await asyncio.to_thread(convert_to_b64, source=temp_filename)
             async with aiofiles.open(file=temp_filename, mode="r") as async_buffer:
                 if ("_attachment" in doc and doc["_attachment"] is not None):
                     # base64 on macOS will add a EOL, so we strip() here
-                    doc["_attachment"].push((await async_buffer.read()).strip())
+                    doc["_attachment"].append((await async_buffer.read()).strip())
                 else:
                     doc["_attachment"] = [(await async_buffer.read()).strip()]
-                    
 
         return doc
-    
-    async def fetch_file_content(self, paths):
-        contents = ""
-        for path in paths:
-            async with aiofiles.open(path, mode="r") as f:
-                contents += await f.read()
-        return contents
 
-    async def get_content(self, doc, table, timestamp=None, doit=None):
-        if not (doit):
+    def _file_reference_key(self, table):
+        file_reference_column = self.configuration["file_reference_column"]
+        if file_reference_column in (None, ""):
+            return None
+        return f"{table}_{file_reference_column}".lower()
+
+    def _normalize_file_reference_ids(self, file_references):
+        file_ids = []
+
+        def _append_id(file_id):
+            if isinstance(file_id, bool):
+                self._logger.warning("Skipping boolean file ID value.")
+                return
+            if not isinstance(file_id, str):
+                file_id = str(file_id)
+            file_id = file_id.strip()
+            if file_id == "":
+                self._logger.warning("Skipping empty file ID value.")
+                return
+            file_ids.append(file_id)
+
+        def _parse_references(references):
+            if references is None:
+                return
+            if isinstance(references, str):
+                stripped = references.strip()
+                if stripped == "":
+                    return
+                if stripped.startswith(("{", "[")):
+                    try:
+                        parsed = json.loads(stripped)
+                    except json.JSONDecodeError as exception:
+                        self._logger.warning(
+                            f"Malformed file ID JSON payload. Skipping value. Error: {exception}"
+                        )
+                        return
+                    _parse_references(parsed)
+                    return
+
+                try:
+                    parsed_ids = next(csv.reader([stripped], skipinitialspace=True))
+                except csv.Error as exception:
+                    self._logger.warning(
+                        f"Malformed CSV file ID payload. Skipping value. Error: {exception}"
+                    )
+                    return
+
+                for parsed_id in parsed_ids:
+                    _append_id(parsed_id)
+                return
+
+            if isinstance(references, (list, tuple)):
+                for value in references:
+                    _parse_references(value)
+                return
+
+            if isinstance(references, dict):
+                file_id = references.get("file_id")
+                if file_id is None:
+                    file_id = references.get("id")
+                if file_id is None:
+                    self._logger.warning(
+                        "Skipping object file reference without `file_id` key."
+                    )
+                    return
+                _parse_references(file_id)
+                return
+
+            _append_id(references)
+
+        _parse_references(file_references)
+        return file_ids
+
+    def _build_file_url(self, file_id):
+        template = self.configuration["file_download_url_template"]
+        if template in (None, ""):
+            self._logger.warning(
+                "File download URL template is not configured. Skipping file download."
+            )
+            return None
+
+        encoded_file_id = quote(str(file_id).strip(), safe="")
+        if encoded_file_id == "":
+            self._logger.warning("Skipping empty encoded file ID.")
+            return None
+
+        try:
+            if "{file_id}" in template or "{id}" in template:
+                file_url = template.format(file_id=encoded_file_id, id=encoded_file_id)
+            else:
+                separator = "" if template.endswith("/") else "/"
+                file_url = f"{template}{separator}{encoded_file_id}"
+        except (KeyError, IndexError, ValueError) as exception:
+            self._logger.warning(
+                f"Could not build file URL from template '{template}'. Error: {exception}"
+            )
+            return None
+
+        parsed = urlparse(file_url)
+        if parsed.scheme not in ("http", "https"):
+            self._logger.warning(
+                f"Skipping built file URL '{file_url}' due to unsupported scheme '{parsed.scheme}'."
+            )
+            return None
+
+        return file_url
+
+    async def _get_http_session(self):
+        if self._http_session is None or self._http_session.closed:
+            self._http_session = aiohttp.ClientSession()
+        return self._http_session
+
+    def _file_download_headers(self):
+        header_name = self.configuration["file_download_auth_header_name"]
+        header_value = self.configuration["file_download_auth_header_value"]
+        if header_name and header_value:
+            return {header_name: header_value}
+        return None
+
+    def _load_netrc_auth(self):
+        if self._netrc_loaded:
             return
-        
-        file_url_column = "FILE_URL".lower() # TODO: make this configurable
-        
-        file_paths = doc[f"{table}_{file_url_column}"]
 
-        paths = []
+        netrc_path = self.configuration["netrc_path"]
+        if netrc_path in (None, ""):
+            self._netrc_loaded = True
+            return
 
-        for path in file_paths:
-            # TODO: Modify path to be relative to mount here 
-            extension = self.get_file_extension(path)
-            file_size = os.path.getsize(path)
-            if not self.can_file_be_downloaded(extension, path, file_size):
+        try:
+            self._netrc_auth = netrc.netrc(netrc_path)
+        except (FileNotFoundError, netrc.NetrcParseError, PermissionError) as exception:
+            self._logger.warning(
+                f"Unable to load .netrc file at '{netrc_path}'. Error: {exception}"
+            )
+        finally:
+            self._netrc_loaded = True
+
+    def _get_netrc_auth(self, url):
+        self._load_netrc_auth()
+        if self._netrc_auth is None:
+            return None
+
+        host = urlparse(url).hostname
+        if host is None:
+            return None
+
+        credentials = self._netrc_auth.authenticators(host)
+        if credentials is None:
+            return None
+
+        login, _, password = credentials
+        if not login or not password:
+            return None
+
+        return aiohttp.BasicAuth(login=login, password=password)
+
+    async def _http_chunked_download_func(self, url, source_filename):
+        session = await self._get_http_session()
+        headers = self._file_download_headers()
+        auth = self._get_netrc_auth(url)
+        async with session.get(url=url, headers=headers, auth=auth) as response:
+            if not response.ok:
                 self._logger.warning(
-                    f"File size {file_size} of {path} bytes is larger than {self.framework_config.max_file_size} bytes. Discarding the file content"
+                    f"Failed to download '{source_filename}' from '{url}'. HTTP status: {response.status}"
+                )
+                raise Exception(f"Failed downloading file with status {response.status}")
+
+            file_size = response.content_length
+            if file_size is not None and not self.is_file_size_within_limit(
+                file_size, source_filename
+            ):
+                self._logger.warning(
+                    f"Skipping '{source_filename}' because it exceeds size limits."
+                )
+                raise Exception("File exceeds max file size")
+
+            async for data in response.content.iter_chunked(
+                DEFAULT_HTTP_DOWNLOAD_CHUNK_SIZE
+            ):
+                yield data
+
+    async def get_content(self, doc, file_urls, timestamp=None, doit=False):
+        if not doit:
+            return
+
+        if not file_urls:
+            return
+
+        extracted_content = {
+            "_id": doc["_id"],
+            "_timestamp": doc.get("_timestamp", timestamp or iso_utc()),
+        }
+        any_download_attempted = False
+        for file_url in file_urls:
+            parsed = urlparse(file_url)
+            source_filename = unquote(parsed.path.rsplit("/", maxsplit=1)[-1])
+            if source_filename == "":
+                source_filename = "downloaded_file"
+
+            file_extension = self.get_file_extension(source_filename)
+            if file_extension and not self.is_valid_file_type(
+                file_extension, source_filename
+            ):
+                self._logger.warning(
+                    f"Skipping file URL '{file_url}' because extension '{file_extension}' is not supported."
                 )
                 continue
-        
-        if (len(paths) == 0):
-            return
-        
-        for path in file_paths:
-            extension = self.get_file_extension(path)
-            doc = await self.download_and_extract_file(
-                doc,
-                path,
-                extension,
-                partial(self.fetch_file_content, path)
+
+            any_download_attempted = True
+            extracted_content = await self.download_and_extract_file(
+                extracted_content,
+                source_filename,
+                file_extension,
+                partial(self._http_chunked_download_func, file_url, source_filename),
+                return_doc_if_failed=True,
             )
 
-        return doc
-
+        if any_download_attempted:
+            return extracted_content
 
     async def close(self):
+        if self._http_session is not None and not self._http_session.closed:
+            await self._http_session.close()
         self.oracle_client.close()
 
     async def ping(self):
@@ -606,15 +840,24 @@ class OracleDataSource(BaseDataSource):
 
                         serialized = self.serialize(doc=row)
 
-                        urls_key = f"{table}_file_urls".lower()
-
-                        if urls_key in serialized and serialized[urls_key] is not None:
-                            urls = json.loads(serialized[urls_key])
-
-                            if (isinstance(urls, (list, tuple))):
-                                serialized[f"{table}_file_urls".lower()] = [url["file_url"] for url in urls]
+                        file_reference_key = self._file_reference_key(table=table)
+                        if file_reference_key is not None:
+                            if file_reference_key not in serialized:
+                                self._logger.warning(
+                                    f"Configured file reference column '{self.configuration['file_reference_column']}' is missing in table '{table}' row."
+                                )
                             else:
-                                serialized[f"{table}_file_urls".lower()] = [urls["file_url"]]
+                                normalized_file_ids = self._normalize_file_reference_ids(
+                                    serialized.get(file_reference_key)
+                                )
+                                file_urls = []
+                                for file_id in normalized_file_ids:
+                                    file_url = self._build_file_url(file_id)
+                                    if file_url:
+                                        file_urls.append(file_url)
+
+                                if file_urls:
+                                    serialized[ORACLE_FILE_URLS_FIELD] = file_urls
 
                         yield serialized
 
@@ -640,7 +883,11 @@ class OracleDataSource(BaseDataSource):
         async for table in self.oracle_client.get_tables_to_fetch():
             table_count += 1
             async for row in self.fetch_documents(table=table):
-                yield row, None
+                file_urls = row.pop(ORACLE_FILE_URLS_FIELD, [])
+                lazy_download = None
+                if file_urls:
+                    lazy_download = partial(self.get_content, doc=row, file_urls=file_urls)
+                yield row, lazy_download
         if table_count < 1:
             self._logger.warning(f"Fetched 0 tables for the database '{self.database}'")
 
@@ -655,7 +902,11 @@ class OracleDataSource(BaseDataSource):
         async for table in self.oracle_client.get_tables_to_fetch():
             table_count += 1
             async for row in self.fetch_documents(table=table, timestamp=timestamp):
-                yield row, None, OP_INDEX
+                file_urls = row.pop(ORACLE_FILE_URLS_FIELD, [])
+                lazy_download = None
+                if file_urls:
+                    lazy_download = partial(self.get_content, doc=row, file_urls=file_urls)
+                yield row, lazy_download, OP_INDEX
 
         if table_count < 1:
             self._logger.warning(f"Fetched 0 tables for the database '{self.database}'")
