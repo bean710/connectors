@@ -765,10 +765,8 @@ class OracleDataSource(BaseDataSource):
             self._logger.warning(f"No file urls found for doc {doc['id']}")
             return
 
-        extracted_content = {
-            "_id": doc["_id"],
-            "_timestamp": doc.get("_timestamp", timestamp or iso_utc()),
-        }
+        extracted_content = { }
+
         any_download_attempted = False
         for file_url in file_urls:
             parsed = urlparse(file_url)
