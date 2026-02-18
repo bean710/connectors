@@ -762,6 +762,7 @@ class OracleDataSource(BaseDataSource):
             return
 
         if not file_urls:
+            self._logger.warning(f"No file urls found for doc {doc['id']}")
             return
 
         extracted_content = {
