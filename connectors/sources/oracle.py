@@ -14,6 +14,7 @@ from functools import cached_property, partial
 from urllib.parse import quote, unquote, urlparse
 
 import aiohttp
+from aiohttp_ntlm import HttpNtlmAuthMiddleware
 
 from asyncpg.exceptions._base import InternalClientError
 from sqlalchemy import create_engine, text
@@ -727,18 +728,23 @@ class OracleDataSource(BaseDataSource):
             self._logger.warning(f"No auth found for host {host}")
             return None
 
-        login, _, password = credentials
-        if not login or not password:
+        username, _, password = credentials
+        if not username or not password:
             return None
 
-        return aiohttp.BasicAuth(login=login, password=password)
+        return username, password
 
     async def _http_chunked_download_func(self, url, source_filename):
         session = await self._get_http_session()
         headers = self._file_download_headers()
-        auth = self._get_netrc_auth(url)
-        self._logger.debug(f"Auth: {auth}")
-        async with session.get(url=url, headers=headers, auth=auth) as response:
+
+        netrc_auth = self._get_netrc_auth(url)
+        middlware = None
+        if netrc_auth is not None:
+            username, password = netrc_auth
+            middlware = HttpNtlmAuthMiddleware(username, password)
+
+        async with session.get(url=url, headers=headers, middlware=middlware) as response:
             if not response.ok:
                 self._logger.warning(
                     f"Failed to download '{source_filename}' from '{url}'. HTTP status: {response.status}"
