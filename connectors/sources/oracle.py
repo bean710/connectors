@@ -739,12 +739,12 @@ class OracleDataSource(BaseDataSource):
         headers = self._file_download_headers()
 
         netrc_auth = self._get_netrc_auth(url)
-        middlware = None
+        middleware = None
         if netrc_auth is not None:
             username, password = netrc_auth
-            middlware = HttpNtlmAuthMiddleware(username, password)
+            middleware = HttpNtlmAuthMiddleware(username, password)
 
-        async with session.get(url=url, headers=headers, middlwares=[middlware]) as response:
+        async with session.get(url=url, headers=headers, middlewares=[middleware]) as response:
             if not response.ok:
                 self._logger.warning(
                     f"Failed to download '{source_filename}' from '{url}'. HTTP status: {response.status}"
