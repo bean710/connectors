@@ -725,6 +725,7 @@ class OracleDataSource(BaseDataSource):
 
         credentials = self._netrc_auth.authenticators(host)
         if credentials is None:
+            self._logger.warning(f"No auth found for host {host}")
             return None
 
         login, _, password = credentials
