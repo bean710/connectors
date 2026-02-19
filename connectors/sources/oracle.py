@@ -696,7 +696,6 @@ class OracleDataSource(BaseDataSource):
         return None
 
     def _load_netrc_auth(self):
-        self._logger.info(f"User: {os.geteuid()}")
         if self._netrc_loaded:
             return
 
@@ -738,6 +737,7 @@ class OracleDataSource(BaseDataSource):
         session = await self._get_http_session()
         headers = self._file_download_headers()
         auth = self._get_netrc_auth(url)
+        self._logger.debug(f"Auth: {auth}")
         async with session.get(url=url, headers=headers, auth=auth) as response:
             if not response.ok:
                 self._logger.warning(
