@@ -696,6 +696,7 @@ class OracleDataSource(BaseDataSource):
         return None
 
     def _load_netrc_auth(self):
+        self._logger.info(f"User: {os.geteuid()}")
         if self._netrc_loaded:
             return
 
