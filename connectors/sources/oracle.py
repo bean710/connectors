@@ -855,7 +855,7 @@ class OracleDataSource(BaseDataSource):
                     async for row in streamer:
                         row = dict(zip(column_names, row, strict=True))
 
-                        self._logger.debug(row)
+                        # self._logger.debug(row)
 
                         row_time = row.get(f"{table.lower()}_{self.oracle_client.get_updated_date_column().lower()}")
                         #self._logger.info(f"Row time: {row_time}")
