@@ -910,15 +910,16 @@ class OracleDataSource(BaseDataSource):
         """
         table_count = 0
         async for table in self.oracle_client.get_tables_to_fetch():
+            restricted_colum = f"{table}_restricted_flag".lower()
             table_count += 1
             async for row in self.fetch_documents(table=table):
                 file_urls = row.pop(ORACLE_FILE_URLS_FIELD, [])
                 lazy_download = None
                 if file_urls:
                     lazy_download = (partial(self.get_content, doc=row, file_urls=file_urls) 
-                                if (row["search.elastic_inl_documents_vw_restricted_flag"] == False 
-                                    or row["search.elastic_inl_documents_vw_restricted_flag"] == "N"
-                                    or row["search.elastic_inl_documents_vw_restricted_flag"] == "false") 
+                                if (row[restricted_colum] == False 
+                                    or row[restricted_colum] == "N"
+                                    or row[restricted_colum] == "false") 
                                 else None)
                 yield row, lazy_download
         if table_count < 1:
@@ -933,13 +934,14 @@ class OracleDataSource(BaseDataSource):
 
         table_count = 0
         async for table in self.oracle_client.get_tables_to_fetch():
+            restricted_colum = f"{table}_restricted_flag".lower()
             table_count += 1
             async for row in self.fetch_documents(table=table, timestamp=timestamp):
                 file_urls = row.pop(ORACLE_FILE_URLS_FIELD, [])
                 lazy_download = None
-                if file_urls and (row["search.elastic_inl_documents_vw_restricted_flag"] == False 
-                                    or row["search.elastic_inl_documents_vw_restricted_flag"] == "N"
-                                    or row["search.elastic_inl_documents_vw_restricted_flag"] == "false"):
+                if file_urls and (row[restricted_colum] == False 
+                                    or row[restricted_colum] == "N"
+                                    or row[restricted_colum] == "false"):
                     lazy_download = partial(self.get_content, doc=row, file_urls=file_urls)
                 yield row, lazy_download, OP_INDEX
 
