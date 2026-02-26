@@ -160,6 +160,7 @@ async def test_get_docs_with_file_references_returns_lazy_download():
                 "_id": "xe_emp_table_1_",
                 "_timestamp": "2023-02-21T08:37:15+00:00",
                 "emp_table_ids": 1,
+                "emp_table_restricted_flag": False,
                 ORACLE_FILE_URLS_FIELD: ["https://example.com/doc.txt"],
             }
 
@@ -175,6 +176,72 @@ async def test_get_docs_with_file_references_returns_lazy_download():
         row, lazy_download = docs[0]
         assert ORACLE_FILE_URLS_FIELD not in row
         assert lazy_download is not None
+
+
+@pytest.mark.asyncio
+async def test_get_docs_with_file_references_disabled_returns_no_lazy_download():
+    async with create_source(
+        OracleDataSource,
+        file_reference_column="file_urls",
+        download_referenced_files=False,
+    ) as source:
+
+        async def _mock_fetch_documents(table, timestamp=None):
+            yield {
+                "_id": "xe_emp_table_1_",
+                "_timestamp": "2023-02-21T08:37:15+00:00",
+                "emp_table_ids": 1,
+                ORACLE_FILE_URLS_FIELD: ["https://example.com/doc.txt"],
+            }
+
+        source.fetch_documents = _mock_fetch_documents
+
+        async def _mock_get_tables_to_fetch():
+            yield "emp_table"
+
+        source.oracle_client.get_tables_to_fetch = _mock_get_tables_to_fetch
+
+        docs = [doc async for doc in source.get_docs()]
+        assert len(docs) == 1
+        row, lazy_download = docs[0]
+        assert ORACLE_FILE_URLS_FIELD not in row
+        assert lazy_download is None
+
+
+@pytest.mark.asyncio
+async def test_get_docs_incrementally_with_file_references_disabled_returns_no_lazy_download():
+    async with create_source(
+        OracleDataSource,
+        file_reference_column="file_urls",
+        download_referenced_files=False,
+    ) as source:
+
+        async def _mock_fetch_documents(table, timestamp=None):
+            yield {
+                "_id": "xe_emp_table_1_",
+                "_timestamp": "2023-02-21T08:37:15+00:00",
+                "emp_table_ids": 1,
+                ORACLE_FILE_URLS_FIELD: ["https://example.com/doc.txt"],
+            }
+
+        source.fetch_documents = _mock_fetch_documents
+
+        async def _mock_get_tables_to_fetch():
+            yield "emp_table"
+
+        source.oracle_client.get_tables_to_fetch = _mock_get_tables_to_fetch
+
+        docs = [
+            doc
+            async for doc in source.get_docs_incrementally(
+                sync_cursor={"cursor_timestamp": "2023-02-21T08:37:15+00:00"}
+            )
+        ]
+        assert len(docs) == 1
+        row, lazy_download, operation = docs[0]
+        assert ORACLE_FILE_URLS_FIELD not in row
+        assert lazy_download is None
+        assert operation == "index"
 
 
 @pytest.mark.parametrize(

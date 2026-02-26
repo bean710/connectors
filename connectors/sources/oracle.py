@@ -524,6 +524,17 @@ class OracleDataSource(BaseDataSource):
                 "ui_restrictions": ["advanced"],
                 "value": False,
             },
+            "download_referenced_files": {
+                "default_value": True,
+                "display": "toggle",
+                "label": "Download referenced files",
+                "order": 22,
+                "required": False,
+                "tooltip": "Disable to skip downloading and extracting content from referenced files.",
+                "type": "bool",
+                "ui_restrictions": ["advanced"],
+                "value": True,
+            },
         }
 
     async def handle_file_content_extraction(self, doc, source_filename, temp_filename):
@@ -574,6 +585,9 @@ class OracleDataSource(BaseDataSource):
         if file_reference_column in (None, ""):
             return None
         return f"{table}_{file_reference_column}".lower()
+
+    def _should_download_referenced_files(self):
+        return self.configuration.get("download_referenced_files", True)
 
     def _normalize_file_reference_ids(self, file_references):
         file_ids = []
@@ -937,13 +951,14 @@ class OracleDataSource(BaseDataSource):
             dictionary: Row dictionary containing meta-data of the row.
         """
         table_count = 0
+        should_download_referenced_files = self._should_download_referenced_files()
         async for table in self.oracle_client.get_tables_to_fetch():
             restricted_colum = f"{table}_restricted_flag".lower()
             table_count += 1
             async for row in self.fetch_documents(table=table):
                 file_urls = row.pop(ORACLE_FILE_URLS_FIELD, [])
                 lazy_download = None
-                if file_urls:
+                if file_urls and should_download_referenced_files:
                     lazy_download = (partial(self.get_content, doc=row, file_urls=file_urls) 
                                 if (row[restricted_colum] == False 
                                     or row[restricted_colum] == "N"
@@ -961,15 +976,18 @@ class OracleDataSource(BaseDataSource):
         self._logger.info(f"Sync cursor time is: {timestamp}")
 
         table_count = 0
+        should_download_referenced_files = self._should_download_referenced_files()
         async for table in self.oracle_client.get_tables_to_fetch():
             restricted_colum = f"{table}_restricted_flag".lower()
             table_count += 1
             async for row in self.fetch_documents(table=table, timestamp=timestamp):
                 file_urls = row.pop(ORACLE_FILE_URLS_FIELD, [])
                 lazy_download = None
-                if file_urls and (row[restricted_colum] == False 
-                                    or row[restricted_colum] == "N"
-                                    or row[restricted_colum] == "false"):
+                if file_urls and should_download_referenced_files and (
+                    row[restricted_colum] == False 
+                    or row[restricted_colum] == "N"
+                    or row[restricted_colum] == "false"
+                ):
                     lazy_download = partial(self.get_content, doc=row, file_urls=file_urls)
                 yield row, lazy_download, OP_INDEX
 
