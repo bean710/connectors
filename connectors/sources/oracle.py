@@ -852,7 +852,7 @@ class OracleDataSource(BaseDataSource):
             row_count = await self.oracle_client.get_table_row_count(table=table)
             if row_count > 0:
                 # Query to get the table's primary key
-                self._logger.debug(f"Total {row_count} rows found in table '{table}'")
+                self._logger.info(f"Total {row_count} rows found in table '{table}'")
                 keys = await self.oracle_client.get_table_primary_key(table=table)
                 keys = map_column_names(column_names=keys, tables=[table])
                 if keys:
