@@ -52,7 +52,6 @@ from connectors.utils import (
     aenumerate,
     get_size,
     iso_utc,
-    retryable,
     sanitize,
 )
 
@@ -86,6 +85,11 @@ ID_DUPLICATE = "_id_duplicates"
 
 # Successful results according to the docs: https://www.elastic.co/guide/en/elasticsearch/reference/current/docs-bulk.html#bulk-api-response-body
 SUCCESSFUL_RESULTS = ("created", "deleted", "updated")
+RETRYABLE_BULK_ITEM_STATUS_CODES = (429,)
+RETRYABLE_BULK_ITEM_ERROR_TYPES = (
+    "es_rejected_execution_exception",
+    "too_many_requests_exception",
+)
 
 
 def get_mib_size(obj):
@@ -171,16 +175,89 @@ class Sink:
 
         raise TypeError(operation)
 
+    def _get_action_item(self, item):
+        if OP_INDEX in item:
+            return OP_INDEX
+        if OP_DELETE in item:
+            return OP_DELETE
+        if OP_CREATE in item:
+            return OP_CREATE
+        if OP_UPDATE in item:
+            return OP_UPDATE
+
+        return None
+
+    def _bulk_action_slots(self, operations):
+        """Map each bulk action response index to the operation slice to retry.
+
+        Bulk operations are sent as action/source pairs for index/update and single
+        action entries for delete.
+        """
+        slots = []
+        index = 0
+        while index < len(operations):
+            op_entry = operations[index]
+            if not isinstance(op_entry, dict) or len(op_entry) != 1:
+                index += 1
+                continue
+
+            op, data = next(iter(op_entry.items()))
+            if op not in (OP_INDEX, OP_UPDATE, OP_DELETE):
+                index += 1
+                continue
+
+            if not (
+                isinstance(data, dict)
+                and "_id" in data.keys()
+                and "_index" in data.keys()
+            ):
+                index += 1
+                continue
+
+            end = index + 1
+            if op in (OP_INDEX, OP_UPDATE):
+                end = min(index + 2, len(operations))
+
+            slots.append((index, end))
+            index = end
+
+        return slots
+
+    def _is_retryable_error_type(self, error):
+        if not isinstance(error, dict):
+            return False
+
+        if error.get("type") in RETRYABLE_BULK_ITEM_ERROR_TYPES:
+            return True
+
+        caused_by = error.get("caused_by")
+        if isinstance(caused_by, dict) and (
+            caused_by.get("type") in RETRYABLE_BULK_ITEM_ERROR_TYPES
+        ):
+            return True
+
+        for root_cause in error.get("root_cause", []):
+            if isinstance(root_cause, dict) and (
+                root_cause.get("type") in RETRYABLE_BULK_ITEM_ERROR_TYPES
+            ):
+                return True
+
+        return False
+
+    def _is_retryable_bulk_item(self, item):
+        action_item = self._get_action_item(item)
+        if action_item is None:
+            return False
+
+        data = item[action_item]
+        status = data.get("status")
+        if status in RETRYABLE_BULK_ITEM_STATUS_CODES:
+            return True
+
+        return self._is_retryable_error_type(data.get("error"))
+
     @tracer.start_as_current_span("_bulk API call", slow_log=1.0)
     async def _batch_bulk(self, operations, stats):
-        # TODO: make this retry policy work with unified retry strategy
-        @retryable(retries=self.max_retires, interval=self.retry_interval)
-        async def _bulk_api_call():
-            return await self.client.client.bulk(
-                operations=operations, pipeline=self.pipeline["name"]
-            )
-
-        # TODO: treat result to retry errors like in async_streaming_bulk
         task_num = len(self.bulk_tasks)
 
         if self._logger.isEnabledFor(logging.DEBUG):
@@ -188,8 +265,58 @@ class Sink:
                 f"Task {task_num} - Sending a batch of {len(operations)} ops -- {get_mib_size(operations)}MiB"
             )
 
-        # TODO: retry 429s for individual items here
-        res = await self.client.bulk_insert(operations, self.pipeline["name"])
+        attempt = 1
+        pending_operations = operations
+        final_items = []
+        retry_forever = self.max_retires <= 0
+        while True:
+            res = await self.client.bulk_insert(
+                pending_operations, self.pipeline["name"]
+            )
+            items = res.get("items", [])
+            action_slots = self._bulk_action_slots(pending_operations)
+
+            retry_indexes = set()
+            for idx, item in enumerate(items):
+                if idx < len(action_slots) and self._is_retryable_bulk_item(item):
+                    retry_indexes.add(idx)
+                else:
+                    final_items.append(item)
+
+            if not retry_indexes:
+                break
+
+            if not retry_forever and attempt >= self.max_retires:
+                first_retry_error = None
+                first_retry_idx = min(retry_indexes)
+                first_retry_action = self._get_action_item(items[first_retry_idx])
+                if first_retry_action is not None:
+                    first_retry_error = items[first_retry_idx][first_retry_action].get(
+                        "error"
+                    )
+                raise ElasticsearchOverloadedError(first_retry_error)
+
+            retry_operations = []
+            for idx in sorted(retry_indexes):
+                start, end = action_slots[idx]
+                retry_operations.extend(pending_operations[start:end])
+
+            self._logger.warning(
+                f"Task {task_num} - Elasticsearch rejected {len(retry_indexes)} bulk items due to overload. "
+                f"Retrying in {self.retry_interval} seconds (attempt {attempt + 1}"
+                f"{'' if retry_forever else f' of {self.max_retires}'})."
+            )
+            await asyncio.sleep(self.retry_interval)
+            pending_operations = retry_operations
+            attempt += 1
+
+        res = {"items": final_items}
+        res["errors"] = any(
+            "error" in data
+            for item in final_items
+            for _, data in item.items()
+            if isinstance(data, dict)
+        )
         ids_to_ops = self._map_id_to_op(operations)
         await self._process_bulk_response(
             res, ids_to_ops, do_log=self._enable_bulk_operations_logging
@@ -226,15 +353,8 @@ class Sink:
 
     async def _process_bulk_response(self, res, ids_to_ops, do_log=False):
         for item in res.get("items", []):
-            if OP_INDEX in item:
-                action_item = OP_INDEX
-            elif OP_DELETE in item:
-                action_item = OP_DELETE
-            elif OP_CREATE in item:
-                action_item = OP_CREATE
-            elif OP_UPDATE in item:
-                action_item = OP_UPDATE
-            else:
+            action_item = self._get_action_item(item)
+            if action_item is None:
                 # Should only happen, if the _bulk API changes
                 # Unlikely, but as this functionality could be used for audits we want to detect changes fast
                 if do_log:

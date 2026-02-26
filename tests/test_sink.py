@@ -1217,6 +1217,100 @@ async def test_batch_bulk_with_errors(patch_logger):
         patch_logger.assert_present(f"operation index failed for doc 1, {error}")
 
 
+@pytest.mark.asyncio
+async def test_batch_bulk_retries_rejected_items_only():
+    operations = [
+        {"index": {"_index": INDEX, "_id": "1"}},
+        {"id": "1"},
+        {"update": {"_index": INDEX, "_id": "2"}},
+        {"doc": {"id": "2"}, "doc_as_upsert": True},
+    ]
+
+    client = Mock()
+    client.bulk_insert = AsyncMock(
+        side_effect=[
+            {
+                "errors": True,
+                "items": [
+                    {"index": {"_id": "1", "result": "created", "status": 201}},
+                    {
+                        "update": {
+                            "_id": "2",
+                            "status": 429,
+                            "error": {"type": "es_rejected_execution_exception"},
+                        }
+                    },
+                ],
+            },
+            {
+                "errors": False,
+                "items": [{"update": {"_id": "2", "result": "updated", "status": 200}}],
+            },
+        ]
+    )
+    sink = Sink(
+        client=client,
+        queue=None,
+        chunk_size=0,
+        pipeline={"name": "pipeline"},
+        chunk_mem_size=0,
+        max_concurrency=0,
+        max_retries=3,
+        retry_interval=0,
+    )
+
+    await sink._batch_bulk(
+        operations,
+        {OP_INDEX: {"1": 10}, OP_UPDATE: {"2": 10}, OP_DELETE: {}},
+    )
+
+    assert client.bulk_insert.await_count == 2
+    assert client.bulk_insert.await_args_list[0].args[0] == operations
+    assert client.bulk_insert.await_args_list[1].args[0] == operations[2:]
+    assert sink.counters.get(INDEXED_DOCUMENT_COUNT) == 2
+    assert sink.counters.get(DELETED_DOCUMENT_COUNT) == 0
+
+
+@pytest.mark.asyncio
+async def test_batch_bulk_raises_on_exhausted_rejected_item_retries():
+    operations = [
+        {"update": {"_index": INDEX, "_id": "2"}},
+        {"doc": {"id": "2"}, "doc_as_upsert": True},
+    ]
+    client = Mock()
+    client.bulk_insert = AsyncMock(
+        return_value={
+            "errors": True,
+            "items": [
+                {
+                    "update": {
+                        "_id": "2",
+                        "status": 429,
+                        "error": {"type": "es_rejected_execution_exception"},
+                    }
+                }
+            ],
+        }
+    )
+    sink = Sink(
+        client=client,
+        queue=None,
+        chunk_size=0,
+        pipeline={"name": "pipeline"},
+        chunk_mem_size=0,
+        max_concurrency=0,
+        max_retries=2,
+        retry_interval=0,
+    )
+
+    with pytest.raises(ElasticsearchOverloadedError):
+        await sink._batch_bulk(
+            operations, {OP_INDEX: {}, OP_UPDATE: {"2": 10}, OP_DELETE: {}}
+        )
+
+    assert client.bulk_insert.await_count == 2
+
+
 @patch("connectors.es.sink.CANCELATION_TIMEOUT", -1)
 @pytest.mark.parametrize(
     "extractor_task, extractor_task_done, sink_task, sink_task_done, expected_result",
