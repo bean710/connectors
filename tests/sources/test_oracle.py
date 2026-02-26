@@ -336,6 +336,37 @@ async def test_get_content_preserves_metadata_when_download_fails():
 
 
 @pytest.mark.asyncio
+async def test_get_content_uses_edms_file_id_as_pdf_filename():
+    async with create_source(OracleDataSource) as source:
+        source.is_valid_file_type = MagicMock(return_value=True)
+        captured = {}
+
+        async def _mock_download_and_extract_file(
+            doc,
+            source_filename,
+            file_extension,
+            download_func,
+            return_doc_if_failed=False,
+        ):
+            captured["source_filename"] = source_filename
+            captured["file_extension"] = file_extension
+            return doc
+
+        source.download_and_extract_file = _mock_download_and_extract_file
+
+        await source.get_content(
+            doc={"_id": "doc-1", "_timestamp": "2024-01-01T00:00:00+00:00"},
+            file_urls=[
+                "https://epaccwa.inl.gov/CMEWebAPI/api/docs/12345/doc-file-content/1"
+            ],
+            doit=True,
+        )
+
+        assert captured["source_filename"] == "12345.pdf"
+        assert captured["file_extension"] == ".pdf"
+
+
+@pytest.mark.asyncio
 async def test_file_download_headers():
     async with create_source(
         OracleDataSource,

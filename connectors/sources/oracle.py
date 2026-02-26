@@ -676,6 +676,30 @@ class OracleDataSource(BaseDataSource):
 
         return file_url
 
+    def _edms_pdf_filename(self, file_url):
+        parsed = urlparse(file_url)
+        path_segments = [segment for segment in parsed.path.split("/") if segment]
+
+        for index, segment in enumerate(path_segments):
+            if segment != "docs":
+                continue
+
+            file_id_index = index + 1
+            if file_id_index >= len(path_segments):
+                break
+
+            file_id = unquote(path_segments[file_id_index]).strip()
+            if file_id == "":
+                break
+
+            if (
+                file_id_index + 1 < len(path_segments)
+                and path_segments[file_id_index + 1] == "doc-file-content"
+            ):
+                return f"{file_id}.pdf"
+
+        return None
+
     async def _get_http_session(self):
         if self._http_session is None or self._http_session.closed:
             self._http_session = aiohttp.ClientSession()
@@ -770,14 +794,18 @@ class OracleDataSource(BaseDataSource):
         any_download_attempted = False
         for file_url in file_urls:
             parsed = urlparse(file_url)
-            source_filename = unquote(parsed.path.rsplit("/", maxsplit=1)[-1])
-            if source_filename == "":
-                source_filename = "downloaded_file"
+            source_filename = self._edms_pdf_filename(file_url)
+            if source_filename is None:
+                source_filename = unquote(parsed.path.rsplit("/", maxsplit=1)[-1])
+                if source_filename == "":
+                    source_filename = "downloaded_file"
 
-            file_extension = self.get_file_extension(source_filename)
-            if file_extension and not self.is_valid_file_type(
-                file_extension, source_filename
-            ):
+            file_extension = self.get_file_extension(source_filename).lower()
+            if file_extension == "":
+                source_filename = f"{source_filename}.pdf"
+                file_extension = ".pdf"
+
+            if not self.is_valid_file_type(file_extension, source_filename):
                 self._logger.warning(
                     f"Skipping file URL '{file_url}' because extension '{file_extension}' is not supported."
                 )
