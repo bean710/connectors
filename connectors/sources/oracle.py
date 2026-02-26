@@ -765,7 +765,7 @@ class OracleDataSource(BaseDataSource):
             self._logger.warning(f"No file urls found for doc {doc['id']}")
             return
 
-        extracted_content = { }
+        extracted_content = doc.copy()
 
         any_download_attempted = False
         for file_url in file_urls:

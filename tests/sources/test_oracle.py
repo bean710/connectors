@@ -299,6 +299,43 @@ async def test_get_content_continues_after_one_file_failure():
 
 
 @pytest.mark.asyncio
+async def test_get_content_preserves_metadata_when_download_fails():
+    async with create_source(OracleDataSource) as source:
+        source.is_valid_file_type = MagicMock(return_value=True)
+
+        async def _mock_download_and_extract_file(
+            doc,
+            source_filename,
+            file_extension,
+            download_func,
+            return_doc_if_failed=False,
+        ):
+            return doc if return_doc_if_failed else None
+
+        source.download_and_extract_file = _mock_download_and_extract_file
+
+        original_doc = {
+            "_id": "doc-1",
+            "_timestamp": "2024-01-01T00:00:00+00:00",
+            "emp_table_epower_files": "123",
+            "emp_table_title": "Important metadata",
+        }
+        content = await source.get_content(
+            doc=original_doc,
+            file_urls=["https://example.com/a.txt"],
+            doit=True,
+        )
+
+        assert content["_id"] == original_doc["_id"]
+        assert content["_timestamp"] == original_doc["_timestamp"]
+        assert (
+            content["emp_table_epower_files"]
+            == original_doc["emp_table_epower_files"]
+        )
+        assert content["emp_table_title"] == original_doc["emp_table_title"]
+
+
+@pytest.mark.asyncio
 async def test_file_download_headers():
     async with create_source(
         OracleDataSource,
