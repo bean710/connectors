@@ -106,7 +106,6 @@ class OracleClient:
         protocol,
         oracle_home,
         wallet_config,
-        file_location_column,
         logger_,
         retry_count=DEFAULT_RETRY_COUNT,
         fetch_size=DEFAULT_FETCH_SIZE,
@@ -126,7 +125,6 @@ class OracleClient:
         self.wallet_config = wallet_config
         self.retry_count = retry_count
         self.fetch_size = fetch_size
-        self.file_location_column = file_location_column
 
         self.connection = None
         self.queries = OracleQueries()
@@ -308,9 +306,6 @@ class OracleClient:
     
     def get_updated_date_column(self):
         return self.updated_date_column
-    
-    def get_file_location_column(self):
-        return self.file_location_column
 
 
 class OracleDataSource(BaseDataSource):
@@ -351,7 +346,6 @@ class OracleDataSource(BaseDataSource):
             wallet_config=self.configuration["wallet_configuration_path"],
             retry_count=self.configuration["retry_count"],
             fetch_size=self.configuration["fetch_size"],
-            file_location_column=self.configuration["file_location_column"],
             logger_=self._logger,
         )
 
