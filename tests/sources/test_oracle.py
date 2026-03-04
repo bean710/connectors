@@ -122,16 +122,16 @@ async def test_get_docs():
             actual_response = []
             expected_response = [
                 {
-                    "emp_table_ids": 1,
-                    "emp_table_names": "abcd",
+                    "ids": 1,
+                    "names": "abcd",
                     "_id": "xe_emp_table_1_",
                     "_timestamp": "2023-02-21T08:37:15+00:00",
                     "Database": "xe",
                     "Table": "emp_table",
                 },
                 {
-                    "emp_table_ids": 2,
-                    "emp_table_names": "xyz",
+                    "ids": 2,
+                    "names": "xyz",
                     "_id": "xe_emp_table_2_",
                     "_timestamp": "2023-02-21T08:37:15+00:00",
                     "Database": "xe",
@@ -159,8 +159,8 @@ async def test_get_docs_with_file_references_returns_lazy_download():
             yield {
                 "_id": "xe_emp_table_1_",
                 "_timestamp": "2023-02-21T08:37:15+00:00",
-                "emp_table_ids": 1,
-                "emp_table_restricted_flag": False,
+                "ids": 1,
+                "restricted_flag": False,
                 ORACLE_FILE_URLS_FIELD: ["https://example.com/doc.txt"],
             }
 
@@ -190,7 +190,7 @@ async def test_get_docs_with_file_references_disabled_returns_no_lazy_download()
             yield {
                 "_id": "xe_emp_table_1_",
                 "_timestamp": "2023-02-21T08:37:15+00:00",
-                "emp_table_ids": 1,
+                "ids": 1,
                 ORACLE_FILE_URLS_FIELD: ["https://example.com/doc.txt"],
             }
 
@@ -220,7 +220,7 @@ async def test_get_docs_incrementally_with_file_references_disabled_returns_no_l
             yield {
                 "_id": "xe_emp_table_1_",
                 "_timestamp": "2023-02-21T08:37:15+00:00",
-                "emp_table_ids": 1,
+                "ids": 1,
                 ORACLE_FILE_URLS_FIELD: ["https://example.com/doc.txt"],
             }
 

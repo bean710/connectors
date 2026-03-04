@@ -584,7 +584,34 @@ class OracleDataSource(BaseDataSource):
         file_reference_column = self.configuration["file_reference_column"]
         if file_reference_column in (None, ""):
             return None
+        return file_reference_column.lower()
+
+    def _legacy_file_reference_key(self, table):
+        file_reference_column = self.configuration["file_reference_column"]
+        if file_reference_column in (None, ""):
+            return None
         return f"{table}_{file_reference_column}".lower()
+
+    def _is_row_not_restricted(self, row, table):
+        restricted_column_candidates = (
+            "restricted_flag",
+            f"{table}_restricted_flag".lower(),
+        )
+        for restricted_column in restricted_column_candidates:
+            if restricted_column in row:
+                restricted_flag = row[restricted_column]
+                return (
+                    restricted_flag is False
+                    or restricted_flag == "N"
+                    or restricted_flag == "false"
+                )
+
+        self._logger.warning(
+            "Configured referenced file download requires a restricted flag column, "
+            "but no supported restricted flag field was found in the row. Defaulting"
+            " to restricted."
+        )
+        return False
 
     def _should_download_referenced_files(self):
         return self.configuration.get("download_referenced_files", True)
@@ -868,7 +895,7 @@ class OracleDataSource(BaseDataSource):
                 # Query to get the table's primary key
                 self._logger.info(f"Total {row_count} rows found in table '{table}'")
                 keys = await self.oracle_client.get_table_primary_key(table=table)
-                keys = map_column_names(column_names=keys, tables=[table])
+                keys = map_column_names(column_names=keys)
                 if keys:
                     try:
                         last_update_time = (
@@ -885,15 +912,21 @@ class OracleDataSource(BaseDataSource):
                         last_update_time = None
                     streamer = self.oracle_client.data_streamer(table=table, timestamp=timestamp)
                     column_names = await anext(streamer)
-                    column_names = map_column_names(
-                        column_names=column_names, tables=[table]
-                    )
+                    column_names = map_column_names(column_names=column_names)
                     async for row in streamer:
                         row = dict(zip(column_names, row, strict=True))
 
                         # self._logger.debug(row)
 
-                        row_time = row.get(f"{table.lower()}_{self.oracle_client.get_updated_date_column().lower()}")
+                        updated_date_column = self.oracle_client.get_updated_date_column()
+                        row_time = None
+                        if updated_date_column:
+                            updated_date_column = updated_date_column.lower()
+                            row_time = row.get(updated_date_column)
+                            if row_time is None:
+                                row_time = row.get(
+                                    f"{table.lower()}_{updated_date_column}"
+                                )
                         #self._logger.info(f"Row time: {row_time}")
                         doc_update_time = iso_utc(row_time)
                         keys_value = ""
@@ -912,14 +945,26 @@ class OracleDataSource(BaseDataSource):
                         serialized = self.serialize(doc=row)
 
                         file_reference_key = self._file_reference_key(table=table)
+                        legacy_file_reference_key = self._legacy_file_reference_key(
+                            table=table
+                        )
                         if file_reference_key is not None:
-                            if file_reference_key not in serialized:
+                            file_references = serialized.get(file_reference_key)
+                            if (
+                                file_references is None
+                                and legacy_file_reference_key is not None
+                            ):
+                                file_references = serialized.get(
+                                    legacy_file_reference_key
+                                )
+
+                            if file_references is None:
                                 self._logger.warning(
                                     f"Configured file reference column '{self.configuration['file_reference_column']}' is missing in table '{table}' row."
                                 )
                             else:
                                 normalized_file_ids = self._normalize_file_reference_ids(
-                                    serialized.get(file_reference_key)
+                                    file_references
                                 )
                                 file_urls = []
                                 for file_id in normalized_file_ids:
@@ -953,17 +998,16 @@ class OracleDataSource(BaseDataSource):
         table_count = 0
         should_download_referenced_files = self._should_download_referenced_files()
         async for table in self.oracle_client.get_tables_to_fetch():
-            restricted_colum = f"{table}_restricted_flag".lower()
             table_count += 1
             async for row in self.fetch_documents(table=table):
                 file_urls = row.pop(ORACLE_FILE_URLS_FIELD, [])
                 lazy_download = None
                 if file_urls and should_download_referenced_files:
-                    lazy_download = (partial(self.get_content, doc=row, file_urls=file_urls) 
-                                if (row[restricted_colum] == False 
-                                    or row[restricted_colum] == "N"
-                                    or row[restricted_colum] == "false") 
-                                else None)
+                    lazy_download = (
+                        partial(self.get_content, doc=row, file_urls=file_urls)
+                        if self._is_row_not_restricted(row=row, table=table)
+                        else None
+                    )
                 yield row, lazy_download
         if table_count < 1:
             self._logger.warning(f"Fetched 0 tables for the database '{self.database}'")
@@ -978,17 +1022,18 @@ class OracleDataSource(BaseDataSource):
         table_count = 0
         should_download_referenced_files = self._should_download_referenced_files()
         async for table in self.oracle_client.get_tables_to_fetch():
-            restricted_colum = f"{table}_restricted_flag".lower()
             table_count += 1
             async for row in self.fetch_documents(table=table, timestamp=timestamp):
                 file_urls = row.pop(ORACLE_FILE_URLS_FIELD, [])
                 lazy_download = None
-                if file_urls and should_download_referenced_files and (
-                    row[restricted_colum] == False 
-                    or row[restricted_colum] == "N"
-                    or row[restricted_colum] == "false"
+                if (
+                    file_urls
+                    and should_download_referenced_files
+                    and self._is_row_not_restricted(row=row, table=table)
                 ):
-                    lazy_download = partial(self.get_content, doc=row, file_urls=file_urls)
+                    lazy_download = partial(
+                        self.get_content, doc=row, file_urls=file_urls
+                    )
                 yield row, lazy_download, OP_INDEX
 
         if table_count < 1:
