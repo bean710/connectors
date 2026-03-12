@@ -1464,6 +1464,61 @@ async def test_cancel_sync(extractor_task_done, sink_task_done, force_cancel):
 
 
 @pytest.mark.asyncio
+async def test_close_cancels_tasks_before_es_client_close():
+    config = {"host": "http://nowhere.com:9200", "user": "tarek", "password": "blah"}
+    es = SyncOrchestrator(config)
+    es.cancel = AsyncMock()
+    es.es_management_client.close = AsyncMock()
+
+    call_order = Mock()
+    call_order.attach_mock(es.cancel, "cancel")
+    call_order.attach_mock(es.es_management_client.close, "close")
+
+    await es.close()
+
+    assert call_order.mock_calls == [call.cancel(), call.close()]
+
+
+def test_sink_task_callback_cancels_extractor_when_sink_is_unexpectedly_cancelled():
+    config = {"host": "http://nowhere.com:9200", "user": "tarek", "password": "blah"}
+    es = SyncOrchestrator(config)
+    es._sink = Mock()
+
+    es._extractor_task = mock.create_autospec(asyncio.Task)
+    es._extractor_task.done = Mock(return_value=False)
+    es._extractor_task.cancel = Mock()
+
+    sink_task = mock.create_autospec(asyncio.Task)
+    sink_task.cancelled = Mock(return_value=True)
+    sink_task.get_name = Mock(return_value="sink-task")
+
+    es.sink_task_callback(sink_task)
+
+    es._extractor_task.cancel.assert_called_once()
+
+
+def test_extractor_task_callback_cancels_sink_when_extractor_errors():
+    config = {"host": "http://nowhere.com:9200", "user": "tarek", "password": "blah"}
+    es = SyncOrchestrator(config)
+    es._extractor = Mock()
+    error = Exception("boom")
+
+    es._sink_task = mock.create_autospec(asyncio.Task)
+    es._sink_task.done = Mock(return_value=False)
+    es._sink_task.cancel = Mock()
+
+    extractor_task = mock.create_autospec(asyncio.Task)
+    extractor_task.cancelled = Mock(return_value=False)
+    extractor_task.get_name = Mock(return_value="extractor-task")
+    extractor_task.exception = Mock(return_value=error)
+
+    es.extractor_task_callback(extractor_task)
+
+    es._sink_task.cancel.assert_called_once()
+    assert es.error == error
+
+
+@pytest.mark.asyncio
 async def test_extractor_run_when_mem_full_is_raised():
     docs_from_source = [
         {"_id": 1},

@@ -140,6 +140,62 @@
             "ui_restrictions": [
                 "advanced"
             ]
+        },
+        "file_reference_column": {
+            "default_value": "",
+            "label": "Column containing CSV file IDs",
+            "order": 16,
+            "required": false,
+            "type": "str",
+            "value": "",
+            "ui_restrictions": [
+                "advanced"
+            ]
+        },
+        "file_download_url_template": {
+            "default_value": "",
+            "label": "File download URL template",
+            "order": 17,
+            "required": false,
+            "type": "str",
+            "value": "",
+            "ui_restrictions": [
+                "advanced"
+            ]
+        },
+        "file_download_auth_header_name": {
+            "default_value": "",
+            "label": "File download auth header name",
+            "order": 18,
+            "required": false,
+            "type": "str",
+            "value": "",
+            "ui_restrictions": [
+                "advanced"
+            ]
+        },
+        "file_download_auth_header_value": {
+            "default_value": "",
+            "label": "File download auth header value",
+            "order": 19,
+            "required": false,
+            "sensitive": true,
+            "type": "str",
+            "value": "",
+            "ui_restrictions": [
+                "advanced"
+            ]
+        },
+        "netrc_path": {
+            "default_value": "",
+            "label": "Path to .netrc file",
+            "order": 20,
+            "required": false,
+            "type": "str",
+            "value": "",
+            "ui_restrictions": [
+                "advanced"
+            ]
         }
     }
 }

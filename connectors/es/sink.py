@@ -832,8 +832,10 @@ class SyncOrchestrator:
         self.canceled = False
 
     async def close(self):
-        await self.es_management_client.close()
-        await self.cancel()
+        try:
+            await self.cancel()
+        finally:
+            await self.es_management_client.close()
 
     async def has_active_license_enabled(self, license_):
         # TODO: think how to make it not a proxy method to the client
@@ -927,8 +929,17 @@ class SyncOrchestrator:
         self._logger.error(
             f"Sync job did not stop within {CANCELATION_TIMEOUT} seconds of canceling. Force-canceling."
         )
-        self._sink.force_cancel()
-        self._extractor.force_cancel()
+        if self._sink is not None:
+            self._sink.force_cancel()
+        if self._extractor is not None:
+            self._extractor.force_cancel()
+
+    def _cancel_counterpart_task(self, task, task_name):
+        if task is not None and not task.done():
+            self._logger.warning(
+                f"Cancelling the {task_name} task after the peer task terminated unexpectedly."
+            )
+            task.cancel()
 
     def ingestion_stats(self):
         stats = {}
@@ -1047,21 +1058,27 @@ class SyncOrchestrator:
             self._logger.warning(
                 f"{type(self._sink).__name__}: {task.get_name()} was cancelled before completion"
             )
+            if not self.canceled:
+                self._cancel_counterpart_task(self._extractor_task, "Extractor")
         elif task.exception():
             self._logger.error(
                 f"Encountered an error in the sync's {type(self._sink).__name__}: {task.get_name()}",
                 exc_info=task.exception(),
             )
             self.error = task.exception()
+            self._cancel_counterpart_task(self._extractor_task, "Extractor")
 
     def extractor_task_callback(self, task):
         if task.cancelled():
             self._logger.warning(
                 f"{type(self._extractor).__name__}: {task.get_name()} was cancelled before completion"
             )
+            if not self.canceled:
+                self._cancel_counterpart_task(self._sink_task, "Sink")
         elif task.exception():
             self._logger.error(
                 f"Encountered an error in the sync's {type(self._extractor).__name__}: {task.get_name()}",
                 exc_info=task.exception(),
             )
             self.error = task.exception()
+            self._cancel_counterpart_task(self._sink_task, "Sink")
