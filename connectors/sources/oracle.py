@@ -864,6 +864,20 @@ class OracleDataSource(BaseDataSource):
         if any_download_attempted:
             return extracted_content
 
+    def tweak_bulk_options(self, options):
+        """Tune bulk options to accommodate slow ELSER inference.
+
+        ELSER runs inference on every document inside each bulk request before Elasticsearch
+        returns a response. With the default chunk_size of 1000, a single bulk call can take
+        thousands of seconds (1000 docs × N seconds/doc), keeping the queue full and eventually
+        triggering QueueFull / "Sync was throttled" errors.
+
+        Reducing chunk_size means each bulk call finishes faster, so the Sink drains the queue
+        more frequently and the Extractor is never blocked for long.
+        """
+        options["chunk_size"] = 25
+        options["queue_refresh_timeout"] = 3600  # 1 hour — safety net
+
     async def close(self):
         if self._http_session is not None and not self._http_session.closed:
             await self._http_session.close()
@@ -913,7 +927,12 @@ class OracleDataSource(BaseDataSource):
                     streamer = self.oracle_client.data_streamer(table=table, timestamp=timestamp)
                     column_names = await anext(streamer)
                     column_names = map_column_names(column_names=column_names)
+                    _row_count = 0
                     async for row in streamer:
+                        _row_count += 1
+                        if _row_count % 100 == 0:
+                            self._logger.info(f"Processed {_row_count} rows from table '{table}' (event loop health check)")
+                            await asyncio.sleep(0)
                         row = dict(zip(column_names, row, strict=True))
 
                         # self._logger.debug(row)
