@@ -92,8 +92,11 @@ async def fetch(
         if fetch_columns:
             yield cursor.keys()
 
+        loop = asyncio.get_running_loop()
         while True:
-            rows = cursor.fetchmany(size=fetch_size)  # pyright: ignore
+            rows = await loop.run_in_executor(
+                None, cursor.fetchmany, fetch_size  # pyright: ignore
+            )
             rows_length = len(rows)
 
             if not rows_length:
