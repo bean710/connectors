@@ -864,6 +864,16 @@ class OracleDataSource(BaseDataSource):
         if any_download_attempted:
             return extracted_content
 
+    def _normalize_company_field(self, doc):
+        """Split and capitalize the 'company' CSV field if present."""
+        for key in ("company",):
+            value = doc.get(key)
+            if not isinstance(value, str):
+                continue
+            parts = [part.strip().upper() for part in value.split(",") if part.strip()]
+            if parts:
+                doc[key] = parts
+
     def tweak_bulk_options(self, options):
         """Tune bulk options to accommodate slow ELSER inference.
 
@@ -962,6 +972,7 @@ class OracleDataSource(BaseDataSource):
                         )
 
                         serialized = self.serialize(doc=row)
+                        self._normalize_company_field(serialized)
 
                         file_reference_key = self._file_reference_key(table=table)
                         legacy_file_reference_key = self._legacy_file_reference_key(
