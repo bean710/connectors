@@ -869,11 +869,11 @@ class OracleDataSource(BaseDataSource):
         for key in ("company",):
             value = doc.get(key)
             if isinstance(value, str):
-                parts = [part.strip().upper() for part in value.split(",") if part.strip()]
+                parts = [part.strip().lower() for part in value.split(",") if part.strip()]
                 if parts:
                     doc[key] = parts
             elif isinstance(value, list):
-                parts = [part.upper() for part in value]
+                parts = [part.lower() for part in value]
                 if parts:
                     doc[key] = parts
 
