@@ -868,11 +868,14 @@ class OracleDataSource(BaseDataSource):
         """Split and capitalize the 'company' CSV field if present."""
         for key in ("company",):
             value = doc.get(key)
-            if not isinstance(value, str):
-                continue
-            parts = [part.strip().upper() for part in value.split(",") if part.strip()]
-            if parts:
-                doc[key] = parts
+            if isinstance(value, str):
+                parts = [part.strip().upper() for part in value.split(",") if part.strip()]
+                if parts:
+                    doc[key] = parts
+            elif isinstance(value, list):
+                parts = [part.upper() for part in value]
+                if parts:
+                    doc[key] = parts
 
     def tweak_bulk_options(self, options):
         """Tune bulk options to accommodate slow ELSER inference.
